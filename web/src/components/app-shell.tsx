@@ -6,35 +6,57 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import type { AuthenticatedUser } from "@/lib/auth";
-import type { SiteContent } from "@/lib/content";
+import type { ContentKey, SiteContent } from "@/lib/content";
 
 interface AppShellProps {
   user: AuthenticatedUser;
   content: SiteContent;
+  activeTab?: "home" | "past" | "planned" | "mine" | "dashboard" | "activities";
   children: ReactNode;
 }
 
-export function AppShell({ user, content, children }: AppShellProps) {
-  const tabs =
-    user.role === "admin"
-      ? [
-          ["nav.home", true],
-          ["nav.past", false],
-          ["nav.planned", false],
-          ["nav.mine", false],
-          ["nav.admin_dashboard", false],
-          ["nav.all_activities", false],
-          ["nav.users", false],
-        ] as const
-      : [
-          ["nav.home", true],
-          ["nav.past", false],
-          ["nav.planned", false],
-          ["nav.mine", false],
-        ] as const;
+export function AppShell({
+  user,
+  content,
+  activeTab = "home",
+  children,
+}: AppShellProps) {
+  const tabs: {
+    key: ContentKey;
+    href?: string;
+    tab?: "home" | "past" | "planned" | "mine" | "dashboard" | "activities";
+  }[] = [
+    { key: "nav.home", href: "/", tab: "home" },
+    { key: "nav.past", href: "/activities/past/new", tab: "past" },
+    { key: "nav.planned", href: "/activities/planned/new", tab: "planned" },
+    { key: "nav.mine", href: "/activities/mine", tab: "mine" },
+  ];
+  if (user.role === "admin") {
+    tabs.push(
+      {
+        key: "nav.admin_dashboard",
+        href: "/admin/dashboard",
+        tab: "dashboard",
+      },
+      {
+        key: "nav.all_activities",
+        href: "/admin/activities",
+        tab: "activities",
+      },
+      { key: "nav.users" },
+    );
+  }
 
   return (
-    <main className="app-container">
+    <main
+      className={
+        activeTab === "dashboard"
+          ? "app-container admin-dashboard-shell"
+          : activeTab === "activities"
+            ? "app-container admin-activities-shell"
+            : "app-container"
+      }
+    >
       <header className="app-header">
         <div className="header-top">
           <div className="brand">
@@ -67,12 +89,16 @@ export function AppShell({ user, content, children }: AppShellProps) {
         </div>
 
         <nav aria-label={content["app.name"]} className="tab-list">
-          {tabs.map(([key, enabled]) =>
-            enabled ? (
+          {tabs.map(({ key, href, tab }) =>
+            href ? (
               <Link
-                aria-current="page"
-                className="nav-tab nav-tab-active"
-                href="/"
+                aria-current={activeTab === tab ? "page" : undefined}
+                className={
+                  activeTab === tab
+                    ? "nav-tab nav-tab-active"
+                    : "nav-tab"
+                }
+                href={href}
                 key={key}
               >
                 {content[key]}

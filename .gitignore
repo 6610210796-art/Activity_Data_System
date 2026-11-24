@@ -2,5 +2,6 @@
 **/.next/
 **/.env.local
 **/.env.*.local
+web/storage/uploads/
 *.tsbuildinfo
 

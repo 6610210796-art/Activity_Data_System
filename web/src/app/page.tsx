@@ -3,6 +3,7 @@ import {
   CalendarDays,
   CalendarPlus,
 } from "lucide-react";
+import Link from "next/link";
 import type { RowDataPacket } from "mysql2";
 import { AppShell } from "@/components/app-shell";
 import { getDb } from "@/lib/db";
@@ -112,7 +113,10 @@ export default async function Home() {
       </section>
 
       <section aria-label={content["home.heading"]} className="activity-grid">
-        <article className="activity-card">
+        <Link
+          className="activity-card activity-card-link"
+          href="/activities/past/new"
+        >
           <div className="activity-card-main">
             <span className="number-badge number-blue">1</span>
             <div className="activity-copy">
@@ -136,9 +140,12 @@ export default async function Home() {
               <ArrowRight aria-hidden="true" size={17} />
             </span>
           </div>
-        </article>
+        </Link>
 
-        <article className="activity-card">
+        <Link
+          className="activity-card activity-card-link"
+          href="/activities/planned/new"
+        >
           <div className="activity-card-main">
             <span className="number-badge number-green">2</span>
             <div className="activity-copy">
@@ -162,7 +169,7 @@ export default async function Home() {
               <ArrowRight aria-hidden="true" size={17} />
             </span>
           </div>
-        </article>
+        </Link>
       </section>
 
       <p className="home-hint">{content["home.mine_hint"]}</p>
