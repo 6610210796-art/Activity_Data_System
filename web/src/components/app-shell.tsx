@@ -11,7 +11,7 @@ import type { ContentKey, SiteContent } from "@/lib/content";
 interface AppShellProps {
   user: AuthenticatedUser;
   content: SiteContent;
-  activeTab?: "home" | "past" | "planned" | "mine" | "dashboard" | "activities";
+  activeTab?: "home" | "past" | "planned" | "mine" | "dashboard" | "activities" | "users";
   children: ReactNode;
 }
 
@@ -24,7 +24,7 @@ export function AppShell({
   const tabs: {
     key: ContentKey;
     href?: string;
-    tab?: "home" | "past" | "planned" | "mine" | "dashboard" | "activities";
+    tab?: "home" | "past" | "planned" | "mine" | "dashboard" | "activities" | "users";
   }[] = [
     { key: "nav.home", href: "/", tab: "home" },
     { key: "nav.past", href: "/activities/past/new", tab: "past" },
@@ -43,7 +43,11 @@ export function AppShell({
         href: "/admin/activities",
         tab: "activities",
       },
-      { key: "nav.users" },
+      {
+        key: "nav.users",
+        href: "/admin/users",
+        tab: "users",
+      },
     );
   }
 
@@ -54,7 +58,9 @@ export function AppShell({
           ? "app-container admin-dashboard-shell"
           : activeTab === "activities"
             ? "app-container admin-activities-shell"
-            : "app-container"
+            : activeTab === "users"
+              ? "app-container admin-users-shell"
+              : "app-container"
       }
     >
       <header className="app-header">
@@ -79,6 +85,9 @@ export function AppShell({
                   : content["common.role.unit_user"]}
               </span>
             </div>
+            <Link className="password-link" href="/account/password">
+              {content["account.password.link"]}
+            </Link>
             <form action="/api/auth/logout" method="post">
               <button className="logout-button" type="submit">
                 <ArrowRightFromLine aria-hidden="true" size={16} />
