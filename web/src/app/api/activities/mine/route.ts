@@ -2,6 +2,10 @@ import { NextResponse, type NextRequest } from "next/server";
 import type { RowDataPacket } from "mysql2";
 import { getCurrentUser } from "@/lib/auth";
 import { getDb } from "@/lib/db";
+import { getNextQuarter } from "@/lib/planned-activity-validation";
+import { buildMineActivityConditions } from "@/lib/mine-activity-filter";
+import { getSiteContent } from "@/lib/content";
+import { formatInactiveLabel } from "@/lib/option-policy";
 
 export const dynamic = "force-dynamic";
 
@@ -16,8 +20,10 @@ interface ActivityRow extends RowDataPacket {
   title: string;
   main_department: string;
   department_name: string;
+  department_active: number;
   activity_type_id: number | string;
   activity_type_name: string | null;
+  activity_type_active: number | null;
   start_date?: Date | string;
   end_date?: Date | string;
   expected_start?: Date | string;
@@ -75,6 +81,31 @@ export async function GET(request: NextRequest) {
   const search = (params.get("search") ?? "").trim().slice(0, 150);
   const page = parsePage(params.get("page"));
   const db = getDb();
+  const baseFiscalYear = getNextQuarter().fiscalYear;
+  const allowedFiscalYears = new Set(
+    Array.from({ length: 10 }, (_, index) => baseFiscalYear + 2 - index),
+  );
+  if (fiscalYear !== null && !allowedFiscalYears.has(fiscalYear)) {
+    return NextResponse.json({ errorKey: "err.filter.invalid" }, { status: 400 });
+  }
+  if (activityTypeId !== null) {
+    const [typeRows] = await db.execute<CountRow[]>(
+      "SELECT COUNT(*) AS total FROM activity_types WHERE id = ?",
+      [activityTypeId],
+    );
+    if (Number(typeRows[0]?.total ?? 0) === 0) {
+      return NextResponse.json({ errorKey: "err.filter.invalid" }, { status: 400 });
+    }
+  }
+  if (user.role === "admin" && departmentCode) {
+    const [departmentRows] = await db.execute<CountRow[]>(
+      "SELECT COUNT(*) AS total FROM departments WHERE code = ?",
+      [departmentCode],
+    );
+    if (Number(departmentRows[0]?.total ?? 0) === 0) {
+      return NextResponse.json({ errorKey: "err.filter.invalid" }, { status: 400 });
+    }
+  }
   const unitDepartment =
     user.role === "unit_user" ? user.department_code : null;
   if (user.role === "unit_user" && unitDepartment === null) {
@@ -88,53 +119,26 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  const commonConditions: string[] = ["deleted_at IS NULL"];
-  const commonValues: (string | number)[] = [];
-  if (unitDepartment !== null) {
-    commonConditions.push("main_department = ?");
-    commonValues.push(unitDepartment);
-  } else if (departmentCode) {
-    commonConditions.push("main_department = ?");
-    commonValues.push(departmentCode);
-  }
+  const sharedFilters = buildMineActivityConditions({
+    fiscalYear,
+    quarterNo,
+    activityTypeId,
+    departmentCode: unitDepartment ?? departmentCode,
+    search,
+  });
 
   const [pastCountRows] = await db.execute<CountRow[]>(
-    `SELECT COUNT(*) AS total FROM past_activities WHERE ${commonConditions.join(" AND ")}`,
-    commonValues,
+    `SELECT COUNT(*) AS total FROM past_activities AS a WHERE ${sharedFilters.sql}`,
+    sharedFilters.values,
   );
   const [plannedCountRows] = await db.execute<CountRow[]>(
-    `SELECT COUNT(*) AS total FROM planned_activities WHERE ${commonConditions.join(" AND ")}`,
-    commonValues,
+    `SELECT COUNT(*) AS total FROM planned_activities AS a WHERE ${sharedFilters.sql}`,
+    sharedFilters.values,
   );
 
   const table = kind === "past" ? "past_activities" : "planned_activities";
-  const conditions = [`a.deleted_at IS NULL`];
-  const values: (string | number)[] = [];
-  if (unitDepartment !== null) {
-    conditions.push("a.main_department = ?");
-    values.push(unitDepartment);
-  } else if (departmentCode) {
-    conditions.push("a.main_department = ?");
-    values.push(departmentCode);
-  }
-  if (fiscalYear !== null) {
-    conditions.push("a.fiscal_year = ?");
-    values.push(fiscalYear);
-  }
-  if (quarterNo !== null) {
-    conditions.push("a.quarter_no = ?");
-    values.push(quarterNo);
-  }
-  if (activityTypeId !== null) {
-    conditions.push("a.activity_type_id = ?");
-    values.push(activityTypeId);
-  }
-  if (search) {
-    conditions.push("a.title LIKE ?");
-    values.push(`%${search}%`);
-  }
-
-  const whereSql = conditions.join(" AND ");
+  const whereSql = sharedFilters.sql;
+  const values = sharedFilters.values;
   const [countRows] = await db.execute<CountRow[]>(
     `SELECT COUNT(*) AS total
      FROM ${table} AS a
@@ -149,8 +153,8 @@ export async function GET(request: NextRequest) {
 
   const pastSelect = `
     SELECT a.id, a.fiscal_year, a.quarter_no, a.title, a.main_department,
-      d.name_th AS department_name, a.activity_type_id,
-      at.name_th AS activity_type_name, a.start_date, a.end_date,
+      d.name_th AS department_name, d.is_active AS department_active, a.activity_type_id,
+      at.name_th AS activity_type_name, at.is_active AS activity_type_active, a.start_date, a.end_date,
       a.total_participants, a.planned_id,
       (SELECT pai.id FROM past_activity_images AS pai
        WHERE pai.past_id = a.id ORDER BY pai.sort_no, pai.id LIMIT 1) AS image_id,
@@ -163,8 +167,8 @@ export async function GET(request: NextRequest) {
     LIMIT ? OFFSET ?`;
   const plannedSelect = `
     SELECT a.id, a.fiscal_year, a.quarter_no, a.title, a.main_department,
-      d.name_th AS department_name, a.activity_type_id,
-      at.name_th AS activity_type_name, a.expected_start, a.expected_end,
+      d.name_th AS department_name, d.is_active AS department_active, a.activity_type_id,
+      at.name_th AS activity_type_name, at.is_active AS activity_type_active, a.expected_start, a.expected_end,
       a.expected_participants, a.date_status, NULL AS image_id, NULL AS planned_id,
       CASE WHEN a.expected_end < CURDATE() AND NOT EXISTS (
         SELECT 1 FROM past_activities AS pa
@@ -181,15 +185,20 @@ export async function GET(request: NextRequest) {
     [...values, pageSize, offset],
   );
 
+  const { "form.option.inactive": inactiveSuffix } = await getSiteContent(["form.option.inactive"]);
   const items = rows.map((row) => ({
     id: String(row.id),
     fiscal_year: Number(row.fiscal_year),
     quarter_no: Number(row.quarter_no),
     title: row.title,
     main_department: row.main_department,
-    department_name: row.department_name,
+    department_name: Number(row.department_active) === 1
+      ? row.department_name
+      : formatInactiveLabel(row.department_name, inactiveSuffix),
     activity_type_id: Number(row.activity_type_id),
-    activity_type_name: row.activity_type_name ?? String(row.activity_type_id),
+    activity_type_name: Number(row.activity_type_active) === 1
+      ? row.activity_type_name ?? String(row.activity_type_id)
+      : formatInactiveLabel(row.activity_type_name ?? String(row.activity_type_id), inactiveSuffix),
     start_date: dateValue(row.start_date ?? row.expected_start),
     end_date: dateValue(row.end_date ?? row.expected_end),
     participants: Number(row.total_participants ?? row.expected_participants ?? 0),

@@ -70,6 +70,36 @@ const keys = [
   "users.reset.confirm",
   "users.confirm.save",
   "users.confirm.cancel",
+  "users.search.submit",
+  "users.filter.clear",
+  "users.pagination.previous",
+  "users.pagination.next",
+  "users.department.select",
+  "users.password.auto_placeholder",
+  "users.menu.label",
+  "users.modal.close",
+  "users.confirm.change_role",
+  "users.confirm.change_role_department",
+  "users.confirm.change_department",
+  "users.confirm.disable",
+  "users.confirm.enable",
+  "users.self.role",
+  "users.self.reset",
+  "users.self.disable",
+  "users.success.profile",
+  "users.success.saved",
+  "users.success.copied",
+  "users.error.validation",
+  "users.error.email_invalid",
+  "users.error.email_duplicate",
+  "users.error.department_invalid",
+  "users.error.department_required",
+  "users.error.lock_protection",
+  "users.error.password_policy",
+  "users.error.session",
+  "users.error.invalid",
+  "users.error.server",
+  "form.option.inactive",
 ] as const satisfies readonly ContentKey[];
 
 interface PageProps {
@@ -90,11 +120,11 @@ export default async function AdminUsersPage({ searchParams }: PageProps) {
   const actor = await requireUser();
   if (actor.role !== "admin") redirect("/");
 
-  const [query, content, departments] = await Promise.all([
+  const [query, content] = await Promise.all([
     searchParams,
     getSiteContent(keys),
-    getDepartmentOptions(),
   ]);
+  const departments = await getDepartmentOptions();
   const statusParam = single(query.status);
   const roleParam = single(query.role);
   const status =

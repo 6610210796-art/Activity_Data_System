@@ -6,6 +6,8 @@ import {
 import Link from "next/link";
 import type { RowDataPacket } from "mysql2";
 import { AppShell } from "@/components/app-shell";
+import { HomeAnnouncements } from "@/components/home-announcements";
+import { getVisibleHomeAnnouncements } from "@/lib/admin-announcements";
 import { getDb } from "@/lib/db";
 import { formatContent, getSiteContent } from "@/lib/content";
 import { requireUser } from "@/lib/auth";
@@ -71,7 +73,7 @@ async function getActivityCounts(
 
 export default async function Home() {
   const user = await requireUser();
-  const [content, counts] = await Promise.all([
+  const [content, counts, announcements] = await Promise.all([
     getSiteContent([
       "app.name",
       "app.org",
@@ -96,8 +98,10 @@ export default async function Home() {
       "home.card2.count",
       "home.card.action",
       "home.mine_hint",
+      "home.announcements.title",
     ]),
     getActivityCounts(user.role, user.department_code),
+    getVisibleHomeAnnouncements(),
   ]);
 
   return (
@@ -111,6 +115,11 @@ export default async function Home() {
           })}
         </p>
       </section>
+
+      <HomeAnnouncements
+        heading={content["home.announcements.title"]}
+        items={announcements}
+      />
 
       <section aria-label={content["home.heading"]} className="activity-grid">
         <Link

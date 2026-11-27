@@ -15,6 +15,8 @@ import type {
   AdminDashboardData,
   DashboardOptions,
 } from "@/lib/admin-dashboard-data";
+import { DashboardFilterControls } from "@/components/dashboard-filter-controls";
+import { ClearFiltersButton } from "@/components/clear-filters-button";
 import { formatContent, type SiteContent } from "@/lib/content";
 
 interface AdminDashboardProps {
@@ -117,7 +119,7 @@ function StatCard({
     <section className="dashboard-stat-card">
       <h2>{title}</h2>
       <p className="dashboard-stat-value">
-        <strong>{value}</strong>
+        <strong className="font-dashboard-number">{value}</strong>
         {unit ? <span>{unit}</span> : null}
       </p>
       {supportingText ? (
@@ -141,64 +143,7 @@ function DashboardFilters({
   data,
   options,
 }: AdminDashboardProps) {
-  return (
-    <form className="dashboard-filters" method="get">
-      <label>
-        <span>{content["dashboard.filter.fiscal_year"]}</span>
-        <select
-          defaultValue={String(data.filters.fiscalYear)}
-          name="fiscal_year"
-        >
-          {options.fiscalYears.map((year) => (
-            <option key={year} value={year}>
-              {year}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        <span>{content["dashboard.filter.quarter"]}</span>
-        <select defaultValue={String(data.filters.quarterNo)} name="quarter">
-          {options.quarters.map((quarter) => (
-            <option key={quarter.no} value={quarter.no}>
-              {quarter.label_th}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        <span>{content["dashboard.filter.department"]}</span>
-        <select
-          defaultValue={data.filters.departmentCode ?? ""}
-          name="department"
-        >
-          <option value="">{content["dashboard.filter.all"]}</option>
-          {options.activeDepartments.map((department) => (
-            <option key={department.code} value={department.code}>
-              {department.code} — {department.name_th}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        <span>{content["dashboard.filter.activity_type"]}</span>
-        <select
-          defaultValue={data.filters.activityTypeId?.toString() ?? ""}
-          name="activity_type"
-        >
-          <option value="">{content["dashboard.filter.all"]}</option>
-          {options.activeActivityTypes.map((activityType) => (
-            <option key={activityType.id} value={activityType.id}>
-              {activityType.name_th}
-            </option>
-          ))}
-        </select>
-      </label>
-      <button className="dashboard-filter-submit" type="submit">
-        {content["dashboard.filter.apply"]}
-      </button>
-    </form>
-  );
+  return <DashboardFilterControls content={content} data={data} options={options} />;
 }
 
 function DepartmentStatus({
@@ -222,12 +167,9 @@ function DepartmentStatus({
           );
           return (
             <span
-              className={
-                submitted
-                  ? "dashboard-status-pill dashboard-status-sent"
-                  : "dashboard-status-pill dashboard-status-pending"
-              }
+              className={`dashboard-status-pill ${submitted ? "dashboard-status-sent" : "dashboard-status-pending"} ${department.code === data.filters.departmentCode ? "dashboard-status-selected" : ""}`}
               key={department.code}
+              aria-current={department.code === data.filters.departmentCode ? "true" : undefined}
               title={
                 submitted
                   ? content["dashboard.submission.sent"]
@@ -292,7 +234,7 @@ function DepartmentChart({
                   title={department.name}
                 />
               </div>
-              <strong>{formatNumber(department.activityCount)}</strong>
+              <strong className="font-dashboard-number">{formatNumber(department.activityCount)}</strong>
             </div>
           ))}
         </div>
@@ -383,7 +325,7 @@ function ActivityTypeChart({
                   );
                 })}
               <text
-                className="dashboard-donut-total"
+                className="dashboard-donut-total font-dashboard-number"
                 dominantBaseline="middle"
                 fill="#263d57"
                 fontSize={19}
@@ -423,7 +365,7 @@ function ActivityTypeChart({
                   {category.shortName}
                 </span>
                 <span>{formatDecimal(percentage)}%</span>
-                <strong>{formatNumber(category.activityCount)}</strong>
+                <strong className="font-dashboard-number">{formatNumber(category.activityCount)}</strong>
               </li>
             );
           })}
@@ -479,7 +421,7 @@ function ParticipantTypeChart({
                   }}
                 />
               </div>
-              <strong>{formatNumber(category.activityCount)}</strong>
+              <strong className="font-dashboard-number">{formatNumber(category.activityCount)}</strong>
             </div>
           ))}
         </div>
@@ -984,25 +926,37 @@ export function AdminDashboard({
         />
       </div>
 
-      <div className="dashboard-chart-grid">
-        <DepartmentChart
-          content={content}
-          data={data}
-          selectedDepartment={data.filters.departmentCode}
-        />
-        <ActivityTypeChart content={content} data={data} options={options} />
-        <ParticipantTypeChart
-          content={content}
-          data={data}
-          options={options}
-        />
-        <TrendChart content={content} data={data} options={options} />
-      </div>
+      {data.current.activityCount === 0 && data.plannedSummary.activityCount === 0 ? (
+        <div className="dashboard-no-results" role="status">
+          <p>{content["dashboard.filter.no_results"]}</p>
+          <ClearFiltersButton href="/admin/dashboard" label={content["dashboard.filter.clear"]} />
+        </div>
+      ) : null}
 
-      <div className="dashboard-lower-grid">
-        <FeaturedActivities content={content} data={data} options={options} />
-        <PlannedActivities content={content} data={data} options={options} />
-      </div>
+      {data.current.activityCount === 0 && data.plannedSummary.activityCount === 0 ? (
+        <div className="dashboard-chart-grid dashboard-trend-only">
+          {data.trends.some((quarter) => quarter.activityCount > 0 || quarter.participants > 0)
+            ? <TrendChart content={content} data={data} options={options} />
+            : null}
+        </div>
+      ) : (
+        <>
+          <div className="dashboard-chart-grid">
+            <DepartmentChart
+              content={content}
+              data={data}
+              selectedDepartment={data.filters.departmentCode}
+            />
+            <ActivityTypeChart content={content} data={data} options={options} />
+            <ParticipantTypeChart content={content} data={data} options={options} />
+            <TrendChart content={content} data={data} options={options} />
+          </div>
+          <div className="dashboard-lower-grid">
+            <FeaturedActivities content={content} data={data} options={options} />
+            <PlannedActivities content={content} data={data} options={options} />
+          </div>
+        </>
+      )}
 
       <footer className="dashboard-source">{content["dashboard.source"]}</footer>
     </div>

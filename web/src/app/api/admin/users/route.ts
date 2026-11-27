@@ -14,6 +14,10 @@ import {
   validatePasswordPolicy,
 } from "@/lib/password-security";
 import { validateProfileUpdate } from "@/lib/user-management";
+import { authorizeAdminUsers } from "@/lib/admin-users-policy";
+import { writeUserAudit } from "@/lib/user-audit";
+import { logSafeServerError } from "@/lib/safe-error-log";
+import { lockActiveAdmins, lockAndVerifyAdminActor } from "@/lib/admin-user-lock";
 
 export const dynamic = "force-dynamic";
 
@@ -33,11 +37,10 @@ function parsePage(value: string | null): number {
 
 export async function GET(request: NextRequest) {
   const actor = await getCurrentUser();
-  if (!actor) return NextResponse.json({ error: "session" }, { status: 401 });
-  if (actor.role !== "admin") {
-    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  const access = authorizeAdminUsers(actor);
+  if (!access.allowed) {
+    return NextResponse.json({ error: access.error }, { status: access.status });
   }
-
   const params = request.nextUrl.searchParams;
   const statusParam = params.get("status");
   const roleParam = params.get("role");
@@ -62,17 +65,18 @@ export async function GET(request: NextRequest) {
     ]);
     return NextResponse.json({ ...data, departments });
   } catch (error) {
-    console.error("Admin users list failed", error);
+    logSafeServerError("Admin users list failed", error);
     return NextResponse.json({ error: "server" }, { status: 500 });
   }
 }
 
 export async function POST(request: NextRequest) {
   const actor = await getCurrentUser();
-  if (!actor) return NextResponse.json({ error: "session" }, { status: 401 });
-  if (actor.role !== "admin") {
-    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  const access = authorizeAdminUsers(actor);
+  if (!access.allowed) {
+    return NextResponse.json({ error: access.error }, { status: access.status });
   }
+  const admin = access.actor;
 
   let body: unknown;
   try {
@@ -117,26 +121,34 @@ export async function POST(request: NextRequest) {
     role === "unit_user" ? departmentCode : null,
   );
   if (profileError) {
-    return NextResponse.json({ error: "validation", message: profileError }, { status: 400 });
+    return NextResponse.json({ error: "validation" }, { status: 400 });
   }
 
   const temporaryPassword = suppliedPassword || generateTemporaryPassword();
   const passwordError = validatePasswordPolicy(temporaryPassword);
   if (passwordError) {
-    return NextResponse.json({ error: "password_policy", message: passwordError }, { status: 400 });
+    return NextResponse.json({ error: "password_policy" }, { status: 400 });
   }
 
   const db = getDb();
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
+    // Keep the same profile-lock order as role/status updates so a concurrent
+    // admin change cannot race this request or deadlock with its actor lock.
+    await lockActiveAdmins(connection);
+    const actorError = await lockAndVerifyAdminActor(connection, admin.id);
+    if (actorError) {
+      await connection.rollback();
+      return NextResponse.json({ error: actorError }, { status: actorError === "session" ? 401 : 403 });
+    }
     const [duplicateRows] = await connection.execute<RowDataPacket[]>(
       "SELECT id FROM profiles WHERE LOWER(email) = LOWER(?) LIMIT 1",
       [email],
     );
     if (duplicateRows.length > 0) {
       await connection.rollback();
-      return NextResponse.json({ error: "email_duplicate", message: "อีเมลนี้มีในระบบแล้ว" }, { status: 409 });
+      return NextResponse.json({ error: "email_duplicate" }, { status: 409 });
     }
 
     if (departmentCode) {
@@ -168,21 +180,19 @@ export async function POST(request: NextRequest) {
       [email],
     );
     const insertId = String(createdRows[0]?.id ?? "");
-    await connection.execute(
-      `INSERT INTO audit_logs (user_id, action, entity, entity_id, detail, ip_address)
-       VALUES (?, 'user.create', 'user', ?, ?, ?)`,
-      [
-        actor.id,
-        insertId,
-        JSON.stringify({
-          email,
-          full_name: fullName,
-          role,
-          department_code: role === "unit_user" ? departmentCode : null,
-        }),
-        ipAddress(request),
-      ],
-    );
+    await writeUserAudit(connection, {
+      actorId: admin.id,
+      action: "user.create",
+      entityId: insertId,
+      before: null,
+      after: {
+        email,
+        full_name: fullName,
+        role,
+        department_code: role === "unit_user" ? departmentCode : null,
+      },
+      ipAddress: ipAddress(request),
+    });
     await connection.commit();
     return NextResponse.json(
       {
@@ -194,9 +204,17 @@ export async function POST(request: NextRequest) {
     );
   } catch (error) {
     await connection.rollback();
-    console.error("Create managed user failed", error);
+    if (isDuplicateEmailError(error)) {
+      return NextResponse.json({ error: "email_duplicate" }, { status: 409 });
+    }
+    logSafeServerError("Create managed user failed", error);
     return NextResponse.json({ error: "server" }, { status: 500 });
   } finally {
     connection.release();
   }
+}
+
+function isDuplicateEmailError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error &&
+    error.code === "ER_DUP_ENTRY";
 }

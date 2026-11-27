@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint src scripts",
-    "test": "node --experimental-strip-types --test tests/activity-department.test.mjs tests/activity-date-validation.test.mjs tests/past-activity-validation.test.mjs tests/planned-activity-validation.test.mjs tests/admin-dashboard-metrics.test.mjs tests/admin-activities-query.test.mjs",
+    "test": "node --experimental-strip-types --test tests/activity-department.test.mjs tests/activity-date-validation.test.mjs tests/past-activity-validation.test.mjs tests/planned-activity-validation.test.mjs tests/admin-dashboard-metrics.test.mjs tests/admin-activities-query.test.mjs tests/admin-users.test.mjs tests/admin-content.test.mjs tests/filter-navigation.test.mjs tests/activity-archive.test.mjs tests/announcement-policy.test.mjs tests/site-asset-policy.test.mjs tests/site-content-tabs.test.mjs tests/options.test.mjs",
     "seed:content": "node scripts/seed-site-content.mjs",
     "admin:create": "node scripts/create-admin.mjs",
     "password:reset": "node scripts/reset-user-password.mjs"

@@ -2,18 +2,9 @@ import "server-only";
 
 import type { RowDataPacket } from "mysql2";
 import { getDb } from "@/lib/db";
+import { toSafeAdminUser, type AdminUserRecord } from "@/lib/admin-users-data-view";
 
-export interface AdminUserRow extends RowDataPacket {
-  id: string;
-  full_name: string;
-  email: string;
-  role: "admin" | "unit_user";
-  department_code: string | null;
-  department_name: string | null;
-  last_login_at: Date | string | null;
-  is_active: number | boolean;
-  created_at: Date | string;
-}
+export type AdminUserRow = AdminUserRecord;
 
 export interface AdminUserItem {
   id: string;
@@ -30,12 +21,6 @@ export interface AdminUserItem {
 export interface DepartmentOption {
   code: string;
   name: string;
-}
-
-function dateValue(value: Date | string | null): string | null {
-  if (!value) return null;
-  if (typeof value === "string") return value;
-  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")} ${String(value.getHours()).padStart(2, "0")}:${String(value.getMinutes()).padStart(2, "0")}:${String(value.getSeconds()).padStart(2, "0")}`;
 }
 
 export function escapeLikeLiteral(value: string): string {
@@ -106,16 +91,6 @@ export async function getAdminUsers(params: {
     total,
     page,
     pageSize,
-    items: rows.map((row) => ({
-      id: row.id,
-      fullName: row.full_name,
-      email: row.email,
-      role: row.role,
-      departmentCode: row.department_code,
-      departmentName: row.department_name,
-      lastLoginAt: dateValue(row.last_login_at),
-      isActive: Number(row.is_active) === 1,
-      createdAt: dateValue(row.created_at) ?? "",
-    })),
+    items: rows.map(toSafeAdminUser),
   };
 }

@@ -1,17 +1,17 @@
 import Link from "next/link";
 import {
   ArrowRightFromLine,
-  FlaskConical,
   ShieldCheck,
 } from "lucide-react";
 import type { ReactNode } from "react";
+import { SiteLogo } from "@/components/site-logo";
 import type { AuthenticatedUser } from "@/lib/auth";
 import type { ContentKey, SiteContent } from "@/lib/content";
 
 interface AppShellProps {
   user: AuthenticatedUser;
   content: SiteContent;
-  activeTab?: "home" | "past" | "planned" | "mine" | "dashboard" | "activities" | "users";
+  activeTab?: "home" | "past" | "planned" | "mine" | "dashboard" | "activities" | "users" | "content";
   children: ReactNode;
 }
 
@@ -24,7 +24,7 @@ export function AppShell({
   const tabs: {
     key: ContentKey;
     href?: string;
-    tab?: "home" | "past" | "planned" | "mine" | "dashboard" | "activities" | "users";
+    tab?: "home" | "past" | "planned" | "mine" | "dashboard" | "activities" | "users" | "content";
   }[] = [
     { key: "nav.home", href: "/", tab: "home" },
     { key: "nav.past", href: "/activities/past/new", tab: "past" },
@@ -48,6 +48,11 @@ export function AppShell({
         href: "/admin/users",
         tab: "users",
       },
+      {
+        key: "nav.content",
+        href: "/admin/content",
+        tab: "content",
+      },
     );
   }
 
@@ -60,15 +65,19 @@ export function AppShell({
             ? "app-container admin-activities-shell"
             : activeTab === "users"
               ? "app-container admin-users-shell"
+            : activeTab === "content"
+              ? "app-container admin-content-shell"
               : "app-container"
       }
     >
       <header className="app-header">
         <div className="header-top">
           <div className="brand">
-            <div className="brand-mark" aria-hidden="true">
-              <FlaskConical size={27} strokeWidth={1.8} />
-            </div>
+            <SiteLogo
+              className="brand-logo"
+              fallbackAlt={content["app.logo.alt"]}
+              sizes="(max-width: 420px) 35vw, (max-width: 760px) 92px, 112px"
+            />
             <div>
               <p className="brand-title">{content["app.name"]}</p>
               <p className="brand-subtitle">{content["app.org"]}</p>
@@ -85,9 +94,6 @@ export function AppShell({
                   : content["common.role.unit_user"]}
               </span>
             </div>
-            <Link className="password-link" href="/account/password">
-              {content["account.password.link"]}
-            </Link>
             <form action="/api/auth/logout" method="post">
               <button className="logout-button" type="submit">
                 <ArrowRightFromLine aria-hidden="true" size={16} />

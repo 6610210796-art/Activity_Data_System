@@ -642,7 +642,7 @@ export function PlannedActivityForm({
           <FormField error={visibleFieldErrors.main_department} gridArea="main-department" id="main_department" label={content["form1.field.main_department"]} required>
             <select aria-describedby={visibleFieldErrors.main_department ? "main_department-error" : undefined} className="past-input" disabled={user.role === "unit_user"} id="main_department" onChange={(event) => handleMainDepartmentChange(event, setValues)} value={values.mainDepartment} required>
               <option value="">{content["form1.select.placeholder"]}</option>
-              {departments.map((department) => <option key={department.code} value={department.code}>{department.name_th}</option>)}
+              {departments.map((department) => <option disabled={department.inactive && department.code !== values.mainDepartment} key={department.code} value={department.code}>{department.name_th}</option>)}
             </select>
           </FormField>
 
@@ -652,7 +652,7 @@ export function PlannedActivityForm({
                 const isMain = department.code === values.mainDepartment;
                 const isSelected = values.coOrganizers.includes(department.code);
                 return (
-                  <button aria-pressed={isSelected} className={`co-organizer-chip${isSelected ? " co-organizer-chip-selected" : ""}${isMain ? " co-organizer-chip-main" : ""}`} disabled={isMain} key={department.code} onClick={() => toggleCoOrganizer(department.code)} type="button">
+                  <button aria-pressed={isSelected} className={`co-organizer-chip${isSelected ? " co-organizer-chip-selected" : ""}${isMain ? " co-organizer-chip-main" : ""}`} disabled={isMain || (department.inactive && !isSelected)} key={department.code} onClick={() => toggleCoOrganizer(department.code)} type="button">
                     {department.code} - {department.name_th}
                   </button>
                 );
@@ -664,7 +664,7 @@ export function PlannedActivityForm({
             <div className="past-input-with-tooltip">
               <select aria-describedby={visibleFieldErrors.activity_type_id ? "activity_type_id-error" : "activity-type-help"} className="past-input" id="activity_type_id" onChange={(event) => { updateValue("activityTypeId", event.currentTarget.value); setActivityTooltipOpen(false); }} value={values.activityTypeId} required>
                 <option value="">{content["form1.select.placeholder"]}</option>
-                {activityTypes.map((activityType) => <option key={activityType.id} value={activityType.id}>{activityType.name_th}</option>)}
+                {activityTypes.map((activityType) => <option disabled={activityType.inactive && String(activityType.id) !== values.activityTypeId} key={activityType.id} value={activityType.id}>{activityType.name_th}</option>)}
               </select>
               <button aria-describedby={selectedActivityType?.description ? "activity-type-description" : "activity-type-help"} aria-expanded={activityTooltipOpen} aria-label={content["form1.field.activity_type"]} className={`past-tooltip-trigger${activityTooltipOpen ? " past-tooltip-open" : ""}`} disabled={!selectedActivityType?.description} onClick={() => setActivityTooltipOpen((isOpen) => !isOpen)} type="button">
                 <Info aria-hidden="true" size={16} />
@@ -677,7 +677,7 @@ export function PlannedActivityForm({
           <FormField error={visibleFieldErrors.participant_type_id} gridArea="participant-type" id="participant_type_id" label={content["form1.field.participant_type"]} required>
             <select aria-describedby={visibleFieldErrors.participant_type_id ? "participant_type_id-error" : undefined} className="past-input" id="participant_type_id" onChange={(event) => updateValue("participantTypeId", event.currentTarget.value)} value={values.participantTypeId} required>
               <option value="">{content["form1.select.placeholder"]}</option>
-              {participantTypes.map((participantType) => <option key={participantType.id} value={participantType.id}>{participantType.name_th}</option>)}
+              {participantTypes.map((participantType) => <option disabled={participantType.inactive && String(participantType.id) !== values.participantTypeId} key={participantType.id} value={participantType.id}>{participantType.name_th}</option>)}
             </select>
           </FormField>
 

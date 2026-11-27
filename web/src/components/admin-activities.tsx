@@ -8,13 +8,15 @@ import {
   ChevronRight,
   ArrowUpDown,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState, useTransition, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
 import type { SiteContent } from "@/lib/content";
 import type {
   AdminActivitiesOptions,
   AdminActivitiesPageData,
 } from "@/lib/admin-activities-data";
 import type { AdminActivitiesFilters } from "@/lib/admin-activities-query";
+import { ClearFiltersButton } from "@/components/clear-filters-button";
 
 interface Props {
   content: SiteContent;
@@ -102,6 +104,36 @@ export function AdminActivities({
 }: Props) {
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState("");
+  const router = useRouter();
+  const [isPending, startTransition] = useTransition();
+  const [search, setSearch] = useState(filters.search);
+  const [activeFilters, setActiveFilters] = useState(filters);
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- mirror server-parsed URL after history navigation
+    setSearch(filters.search);
+    setActiveFilters(filters);
+    return () => {
+      if (searchTimer.current) clearTimeout(searchTimer.current);
+    };
+  }, [filters]);
+
+  function navigate(next: Partial<AdminActivitiesFilters>, mode: "push" | "replace") {
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    const updated = { ...activeFilters, ...next, search: next.search ?? search, page: 1 };
+    setActiveFilters(updated);
+    const href = buildUrl(updated);
+    startTransition(() => mode === "push"
+      ? router.push(href, { scroll: false })
+      : router.replace(href, { scroll: false }));
+  }
+
+  function submitSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    navigate({ search }, "replace");
+  }
 
   async function handleExport() {
     if (exporting) return;
@@ -153,7 +185,7 @@ export function AdminActivities({
     return (
       <Link
         className="all-sort-link"
-        href={buildUrl(filters, {
+        href={buildUrl(activeFilters, {
           sort: field,
           direction: nextDirection,
           page: 1,
@@ -198,17 +230,24 @@ export function AdminActivities({
         </p>
       ) : null}
 
-      <form className="all-filter-card" method="get" action="/admin/activities">
+      <form className="all-filter-card" onSubmit={submitSearch}>
         <label className="all-search-field">
           <Search aria-hidden="true" size={17} />
           <input
+            aria-label={content["all.search.placeholder"]}
             name="q"
             type="search"
-            defaultValue={filters.search}
+            value={search}
+            onChange={(event) => {
+              const value = event.target.value;
+              setSearch(value);
+              if (searchTimer.current) clearTimeout(searchTimer.current);
+              searchTimer.current = setTimeout(() => navigate({ search: value }, "replace"), 350);
+            }}
             placeholder={content["all.search.placeholder"]}
           />
         </label>
-        <select name="fy" defaultValue={filters.fiscalYear?.toString() ?? ""}>
+        <select aria-label={content["all.filter.year"]} name="fy" value={activeFilters.fiscalYear?.toString() ?? ""} onChange={(event) => navigate({ fiscalYear: event.target.value ? Number(event.target.value) : null }, "push")}>
           <option value="">{content["all.filter.year"]}</option>
           {options.fiscalYears.map((year) => (
             <option key={year} value={year}>
@@ -216,7 +255,7 @@ export function AdminActivities({
             </option>
           ))}
         </select>
-        <select name="quarter" defaultValue={filters.quarterNo?.toString() ?? ""}>
+        <select aria-label={content["all.filter.quarter"]} name="quarter" value={activeFilters.quarterNo?.toString() ?? ""} onChange={(event) => navigate({ quarterNo: event.target.value ? Number(event.target.value) : null }, "push")}>
           <option value="">{content["all.filter.quarter"]}</option>
           {options.quarters.map((quarter) => (
             <option key={quarter.no} value={quarter.no}>
@@ -225,8 +264,10 @@ export function AdminActivities({
           ))}
         </select>
         <select
+          aria-label={content["all.filter.activity_type"]}
           name="activity_type"
-          defaultValue={filters.activityTypeId?.toString() ?? ""}
+          value={activeFilters.activityTypeId?.toString() ?? ""}
+          onChange={(event) => navigate({ activityTypeId: event.target.value ? Number(event.target.value) : null }, "push")}
         >
           <option value="">{content["all.filter.activity_type"]}</option>
           {options.activityTypes.map((type) => (
@@ -236,8 +277,10 @@ export function AdminActivities({
           ))}
         </select>
         <select
+          aria-label={content["all.filter.department"]}
           name="department"
-          defaultValue={filters.departmentCode ?? ""}
+          value={activeFilters.departmentCode ?? ""}
+          onChange={(event) => navigate({ departmentCode: event.target.value || null }, "push")}
         >
           <option value="">{content["all.filter.department"]}</option>
           {options.departments.map((department) => (
@@ -246,28 +289,23 @@ export function AdminActivities({
             </option>
           ))}
         </select>
-        <select name="status" defaultValue={filters.status}>
+        <select aria-label={content["all.column.status"]} name="status" value={activeFilters.status} onChange={(event) => navigate({ status: event.target.value as AdminActivitiesFilters["status"] }, "push")}>
           <option value="all">{content["all.status.all"]}</option>
           <option value="past">{content["all.status.past"]}</option>
           <option value="planned">{content["all.status.planned"]}</option>
           <option value="confirmed">{content["all.status.confirmed"]}</option>
           <option value="unconfirmed">{content["all.status.unconfirmed"]}</option>
         </select>
-        <Link className="all-clear-button" href="/admin/activities">
-          {content["all.filter.clear"]}
-        </Link>
-        <button className="all-filter-submit" type="submit">
-          แสดงข้อมูล
-        </button>
+        <ClearFiltersButton href="/admin/activities" label={content["all.filter.clear"]} />
       </form>
 
-      <section className="all-table-card" aria-busy="false">
+      <section className="all-table-card" aria-busy={isPending}>
+        {isPending ? <div className="filter-loading-bar" aria-hidden="true" /> : null}
+        <p className="sr-only" aria-live="polite">{content["all.pagination.summary"].replace("{start}", String(start)).replace("{end}", String(end)).replace("{total}", String(data.total))}</p>
         {data.total === 0 ? (
           <div className="all-empty">
             <p>{content["all.empty"]}</p>
-            <Link className="all-clear-button" href="/admin/activities">
-              {content["all.filter.clear"]}
-            </Link>
+            <ClearFiltersButton href="/admin/activities" label={content["all.filter.clear"]} />
           </div>
         ) : (
           <>
@@ -379,7 +417,7 @@ export function AdminActivities({
               <nav aria-label={content["all.column.activity"]}>
                 {data.page > 1 ? (
                   <Link
-                    href={buildUrl(filters, { page: data.page - 1 })}
+                    href={buildUrl(activeFilters, { page: data.page - 1 })}
                     aria-label={content["all.pagination.previous"]}
                   >
                     <ChevronLeft aria-hidden="true" size={16} />
@@ -388,7 +426,7 @@ export function AdminActivities({
                 ) : null}
                 {data.page < data.totalPages ? (
                   <Link
-                    href={buildUrl(filters, { page: data.page + 1 })}
+                    href={buildUrl(activeFilters, { page: data.page + 1 })}
                     aria-label={content["all.pagination.next"]}
                   >
                     {content["all.pagination.next"]}

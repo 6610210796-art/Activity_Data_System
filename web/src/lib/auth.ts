@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { jwtVerify, SignJWT } from "jose";
 import type { RowDataPacket } from "mysql2";
 import { getDb } from "@/lib/db";
+import { resolveAuthenticatedProfile } from "@/lib/auth-profile";
 
 export const AUTH_COOKIE_NAME = "activity_session";
 export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
@@ -59,18 +60,7 @@ export async function getCurrentUser(): Promise<AuthenticatedUser | null> {
     "SELECT id, email, full_name, role, department_code, is_active FROM profiles WHERE id = ? LIMIT 1",
     [userId],
   );
-  const profile = rows[0];
-  if (!profile || Number(profile.is_active) !== 1) {
-    return null;
-  }
-
-  return {
-    id: profile.id,
-    email: profile.email,
-    full_name: profile.full_name,
-    role: profile.role,
-    department_code: profile.department_code,
-  };
+  return resolveAuthenticatedProfile(rows[0]);
 }
 
 export async function requireUser(): Promise<AuthenticatedUser> {

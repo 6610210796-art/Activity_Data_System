@@ -13,7 +13,7 @@ interface ActivityImageRow extends RowDataPacket {
 }
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ imageId: string }> },
 ) {
   const user = await getCurrentUser();
@@ -26,13 +26,15 @@ export async function GET(
     return new NextResponse(null, { status: 404 });
   }
 
+  const archiveScope = new URL(request.url).searchParams.get("scope") === "archive";
   const [rows] = await getDb().execute<ActivityImageRow[]>(
     `SELECT pai.file_path, pa.main_department
      FROM past_activity_images AS pai
      INNER JOIN past_activities AS pa ON pa.id = pai.past_id
-     WHERE pai.id = ? AND pa.deleted_at IS NULL
+     WHERE pai.id = ? AND ((? = 1 AND pa.deleted_at IS NOT NULL AND pa.purged_at IS NULL)
+       OR (? = 0 AND pa.deleted_at IS NULL AND pa.purged_at IS NULL))
      LIMIT 1`,
-    [imageId],
+    [imageId, archiveScope ? 1 : 0, archiveScope ? 1 : 0],
   );
   const image = rows[0];
   if (

@@ -5,12 +5,13 @@ import { fileTypeFromBuffer } from "file-type";
 import { NextResponse } from "next/server";
 import type {
   PoolConnection,
-  ResultSetHeader,
   RowDataPacket,
 } from "mysql2/promise";
 import { getCurrentUser } from "@/lib/auth";
 import { getDb } from "@/lib/db";
 import { validateActivityDates } from "@/lib/activity-date-validation";
+import { changeActivityArchiveState } from "@/lib/activity-archive";
+import { isOptionSelectable } from "@/lib/option-queries";
 
 export const runtime = "nodejs";
 
@@ -33,10 +34,6 @@ interface ActivityRow extends RowDataPacket {
 
 interface OrganizerRow extends RowDataPacket {
   department_code: string;
-}
-
-interface CodeRow extends RowDataPacket {
-  code: string;
 }
 
 interface ExistingBannerRow extends RowDataPacket {
@@ -108,7 +105,7 @@ export async function GET(
 }
 
 export async function DELETE(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const user = await getCurrentUser();
@@ -116,20 +113,11 @@ export async function DELETE(
   const { id } = await params;
   if (!validId(id)) return NextResponse.json({ errorKey: "err.save" }, { status: 404 });
 
-  const department = user.role === "unit_user" ? user.department_code : null;
-  if (user.role === "unit_user" && !department) {
-    return NextResponse.json({ errorKey: "err.save" }, { status: 404 });
-  }
-  const [result] = await getDb().execute<ResultSetHeader>(
-    `UPDATE planned_activities
-     SET deleted_at = CURRENT_TIMESTAMP
-     WHERE id = ? AND deleted_at IS NULL
-       AND (? IS NULL OR main_department = ?)`,
-    [id, department, department],
-  );
-  if (result.affectedRows !== 1) {
-    return NextResponse.json({ errorKey: "err.save" }, { status: 404 });
-  }
+  const result = await changeActivityArchiveState({
+    user, kind: "planned", id, action: "archive",
+    ipAddress: request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null,
+  });
+  if (!result.ok) return NextResponse.json({ errorKey: "err.save" }, { status: result.status });
   return NextResponse.json({ ok: true });
 }
 
@@ -275,23 +263,40 @@ export async function PATCH(
     }
 
     const db = getDb();
-    const [[departmentRows], [quarterRows], [activityRows], [participantRows]] = await Promise.all([
-      db.execute<CodeRow[]>("SELECT code FROM departments WHERE code = ? AND is_active = 1 LIMIT 1", [mainDepartment]),
+    const [priorRows] = await db.execute<RowDataPacket[]>(
+      `SELECT main_department, activity_type_id, participant_type_id
+         FROM planned_activities
+        WHERE id = ? AND deleted_at IS NULL AND purged_at IS NULL LIMIT 1`,
+      [id],
+    );
+    const prior = priorRows[0] as {
+      main_department?: string;
+      activity_type_id?: number | string;
+      participant_type_id?: number | string;
+    } | undefined;
+    const [priorCoRows] = await db.execute<(RowDataPacket & { department_code: string })[]>(
+      "SELECT department_code FROM planned_co_organizers WHERE planned_id = ?",
+      [id],
+    );
+    const previousDepartments = prior
+      ? [prior.main_department ?? "", ...priorCoRows.map((row) => row.department_code)]
+      : [];
+
+    const [[quarterRows], canUseMain, canUseType, canUseParticipant] = await Promise.all([
       db.execute<RowDataPacket[]>("SELECT no FROM quarters WHERE no = ? LIMIT 1", [quarterNo]),
-      db.execute<RowDataPacket[]>("SELECT id FROM activity_types WHERE id = ? AND is_active = 1 LIMIT 1", [activityTypeId]),
-      db.execute<RowDataPacket[]>("SELECT id FROM participant_types WHERE id = ? AND is_active = 1 LIMIT 1", [participantTypeId]),
+      isOptionSelectable("departments", mainDepartment, previousDepartments),
+      isOptionSelectable("activity_types", String(activityTypeId), prior ? [String(prior.activity_type_id)] : []),
+      isOptionSelectable("participant_types", String(participantTypeId), prior ? [String(prior.participant_type_id)] : []),
     ]);
-    if (!departmentRows.length) return NextResponse.json({ errorKey: "err.department.invalid", field: "main_department" }, { status: 400 });
+    if (!canUseMain) return NextResponse.json({ errorKey: "err.department.invalid", field: "main_department" }, { status: 400 });
     if (!quarterRows.length) return NextResponse.json({ errorKey: "err.required", field: "quarter_no" }, { status: 400 });
-    if (!activityRows.length) return NextResponse.json({ errorKey: "err.required", field: "activity_type_id" }, { status: 400 });
-    if (!participantRows.length) return NextResponse.json({ errorKey: "err.required", field: "participant_type_id" }, { status: 400 });
+    if (!canUseType) return NextResponse.json({ errorKey: "err.required", field: "activity_type_id" }, { status: 400 });
+    if (!canUseParticipant) return NextResponse.json({ errorKey: "err.required", field: "participant_type_id" }, { status: 400 });
     if (coOrganizers.length) {
-      const placeholders = coOrganizers.map(() => "?").join(", ");
-      const [organizerRows] = await db.execute<CodeRow[]>(
-        `SELECT code FROM departments WHERE is_active = 1 AND code IN (${placeholders})`,
-        coOrganizers,
-      );
-      if (organizerRows.length !== coOrganizers.length) {
+      const allowed = await Promise.all(coOrganizers.map((code) => (
+        isOptionSelectable("departments", code, previousDepartments)
+      )));
+      if (allowed.some((ok) => !ok)) {
         return NextResponse.json({ errorKey: "err.department.invalid", field: "co_organizers" }, { status: 400 });
       }
     }

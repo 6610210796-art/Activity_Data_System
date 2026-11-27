@@ -12,6 +12,8 @@ import {
   validatePasswordPolicy,
   verifyPassword,
 } from "@/lib/password-security";
+import { writeUserAudit } from "@/lib/user-audit";
+import { logSafeServerError } from "@/lib/safe-error-log";
 
 export const dynamic = "force-dynamic";
 
@@ -39,24 +41,17 @@ export async function POST(request: NextRequest) {
   }
 
   if (body.newPassword !== body.confirmPassword) {
-    return NextResponse.json({
-      error: "confirmation",
-      message: "รหัสผ่านใหม่และยืนยันรหัสผ่านไม่ตรงกัน",
-    }, { status: 400 });
+    return NextResponse.json({ error: "confirmation" }, { status: 400 });
   }
   const policyError = validatePasswordPolicy(body.newPassword);
   if (policyError) {
-    return NextResponse.json({
-      error: "password_policy",
-      message: policyError,
-    }, { status: 400 });
+    return NextResponse.json({ error: "password_policy" }, { status: 400 });
   }
 
   const lockSeconds = getPasswordChangeLockSeconds(user.id);
   if (lockSeconds > 0) {
     return NextResponse.json({
       error: "locked",
-      message: "ใส่รหัสผ่านไม่ถูกต้องเกินกำหนด กรุณาลองใหม่ภายหลัง",
       retryAfter: lockSeconds,
     }, { status: 429 });
   }
@@ -79,15 +74,11 @@ export async function POST(request: NextRequest) {
     const retryAfter = recordPasswordChangeFailure(user.id);
     return NextResponse.json({
       error: "current_password",
-      message: "รหัสผ่านปัจจุบันไม่ถูกต้อง",
       retryAfter,
     }, { status: retryAfter > 0 ? 429 : 400 });
   }
   if (await verifyPassword(body.newPassword, passwordHash)) {
-    return NextResponse.json({
-      error: "same_password",
-      message: "รหัสผ่านใหม่ต้องไม่เหมือนรหัสผ่านเดิม",
-    }, { status: 400 });
+    return NextResponse.json({ error: "same_password" }, { status: 400 });
   }
 
   const connection = await db.getConnection();
@@ -106,18 +97,16 @@ export async function POST(request: NextRequest) {
       "UPDATE profiles SET password_hash = ? WHERE id = ?",
       [nextHash, user.id],
     );
-    await connection.execute(
-      `INSERT INTO audit_logs (user_id, action, entity, entity_id, detail, ip_address)
-       VALUES (?, 'user.change_password', 'user', ?, ?, ?)`,
-      [
-        user.id,
-        user.id,
-        JSON.stringify({ password_change: "completed" }),
-        request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
-          ?? request.headers.get("x-real-ip")?.trim()
-          ?? null,
-      ],
-    );
+    const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+    const realIp = request.headers.get("x-real-ip")?.trim();
+    await writeUserAudit(connection, {
+      actorId: user.id,
+      action: "user.change_password",
+      entityId: user.id,
+      before: { credential_state: "existing" },
+      after: { credential_state: "changed" },
+      ipAddress: (forwarded || realIp || "").slice(0, 45) || null,
+    });
     await connection.commit();
     clearPasswordChangeFailures(user.id);
 
@@ -134,7 +123,7 @@ export async function POST(request: NextRequest) {
     return response;
   } catch (error) {
     await connection.rollback();
-    console.error("Change password failed", error);
+    logSafeServerError("Change password failed", error);
     return NextResponse.json({ error: "server" }, { status: 500 });
   } finally {
     connection.release();

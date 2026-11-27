@@ -1072,7 +1072,11 @@ export function PastActivityForm({
             >
               <option value="">{content["form1.select.placeholder"]}</option>
               {departments.map((department) => (
-                <option key={department.code} value={department.code}>
+                <option
+                  disabled={department.inactive && department.code !== values.mainDepartment}
+                  key={department.code}
+                  value={department.code}
+                >
                   {department.name_th}
                 </option>
               ))}
@@ -1104,7 +1108,7 @@ export function PastActivityForm({
                   <button
                     aria-pressed={isSelected}
                     className={`co-organizer-chip${isSelected ? " co-organizer-chip-selected" : ""}${isMainDepartment ? " co-organizer-chip-main" : ""}`}
-                    disabled={isMainDepartment}
+                    disabled={isMainDepartment || (department.inactive && !values.coOrganizers.includes(department.code))}
                     key={department.code}
                     onClick={() => toggleCoOrganizer(department.code)}
                     type="button"
@@ -1144,6 +1148,7 @@ export function PastActivityForm({
                 <option value="">{content["form1.select.placeholder"]}</option>
                 {activityTypes.map((activityType) => (
                   <option
+                    disabled={activityType.inactive && String(activityType.id) !== values.activityTypeId}
                     key={activityType.id}
                     title={activityType.description ?? ""}
                     value={activityType.id}
@@ -1203,7 +1208,11 @@ export function PastActivityForm({
             >
               <option value="">{content["form1.select.placeholder"]}</option>
               {participantTypes.map((participantType) => (
-                <option key={participantType.id} value={participantType.id}>
+                <option
+                  disabled={participantType.inactive && String(participantType.id) !== values.participantTypeId}
+                  key={participantType.id}
+                  value={participantType.id}
+                >
                   {participantType.name_th}
                 </option>
               ))}

@@ -38,6 +38,10 @@ const DASHBOARD_CONTENT_KEYS = [
   "dashboard.filter.activity_type",
   "dashboard.filter.all",
   "dashboard.filter.apply",
+  "dashboard.filter.clear",
+  "form.option.inactive",
+  "dashboard.filter.no_results",
+  "dashboard.filter.results",
   "dashboard.submission.summary",
   "dashboard.submission.sent",
   "dashboard.submission.pending",
@@ -112,7 +116,7 @@ function parseFilters(
   const departmentParam = getSingleParam(searchParams.department);
   const departmentCode =
     departmentParam &&
-    options.activeDepartments.some(
+    options.filterDepartments.some(
       (department) => department.code === departmentParam,
     )
       ? departmentParam
@@ -120,7 +124,7 @@ function parseFilters(
   const activityTypeValue = Number(
     getSingleParam(searchParams.activity_type),
   );
-  const activityTypeId = options.activeActivityTypes.some(
+  const activityTypeId = options.filterActivityTypes.some(
     (activityType) => activityType.id === activityTypeValue,
   )
     ? activityTypeValue
@@ -143,11 +147,14 @@ export default async function AdminDashboardPage({
   }
 
   const defaultQuarter = getPreviousQuarter();
-  const [query, options, content] = await Promise.all([
+  const [query, content] = await Promise.all([
     searchParams,
-    getAdminDashboardOptions(defaultQuarter.fiscalYear),
     getSiteContent(DASHBOARD_CONTENT_KEYS),
   ]);
+  const options = await getAdminDashboardOptions(
+    defaultQuarter.fiscalYear,
+    content["form.option.inactive"],
+  );
   const filters = parseFilters(query, options, defaultQuarter);
   const data = await getAdminDashboardData(filters, options);
 

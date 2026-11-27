@@ -4,6 +4,7 @@ import type { RowDataPacket } from "mysql2";
 import { AUTH_COOKIE_NAME, createSessionToken, SESSION_MAX_AGE_SECONDS } from "@/lib/auth";
 import { getSiteContent } from "@/lib/content";
 import { getDb } from "@/lib/db";
+import { logSafeServerError } from "@/lib/safe-error-log";
 import {
   clearFailedLogins,
   getLoginLockSeconds,
@@ -94,7 +95,7 @@ export async function POST(request: NextRequest) {
     });
     return response;
   } catch (error) {
-    console.error("Login request failed", error);
+    logSafeServerError("Login request failed", error);
     return NextResponse.json(
       { message: content["login.error.server"] },
       { status: 503 },

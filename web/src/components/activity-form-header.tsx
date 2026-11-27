@@ -5,7 +5,7 @@ import type { ContentKey, SiteContent } from "@/lib/content";
 
 interface ActivityFormHeaderProps {
   content: SiteContent;
-  number: 1 | 2 | 4;
+  number?: 1 | 2;
   titleKey: ContentKey;
   descriptionKey: ContentKey;
   rightAction?: ReactNode;
@@ -29,12 +29,14 @@ export function ActivityFormHeader({
   return (
     <section className="activity-form-header">
       <div className="activity-form-header-main">
-        <div
-          className={`activity-form-number${number === 2 ? " activity-form-number-green" : ""}`}
-          aria-hidden="true"
-        >
-          {number}
-        </div>
+        {number ? (
+          <div
+            className={`activity-form-number${number === 2 ? " activity-form-number-green" : ""}`}
+            aria-hidden="true"
+          >
+            {number}
+          </div>
+        ) : null}
         <div className="activity-form-header-copy">
           <h1>{content[titleKey]}</h1>
           <p>{content[descriptionKey]}</p>

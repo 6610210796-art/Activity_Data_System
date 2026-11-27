@@ -2,6 +2,8 @@ import "server-only";
 
 import type { RowDataPacket } from "mysql2";
 import { getDb } from "@/lib/db";
+import { getActivityOptionSets } from "@/lib/option-queries";
+import { formatInactiveLabel } from "@/lib/option-policy";
 import {
   ADMIN_ACTIVITIES_EXPORT_LIMIT,
   buildAdminActivitiesQueries,
@@ -11,16 +13,6 @@ import {
 interface QuarterRow extends RowDataPacket {
   no: number | string;
   label_th: string;
-}
-
-interface DepartmentRow extends RowDataPacket {
-  code: string;
-  name_th: string;
-}
-
-interface ActivityTypeRow extends RowDataPacket {
-  id: number | string;
-  name_th: string;
 }
 
 interface FiscalYearRow extends RowDataPacket {
@@ -39,9 +31,12 @@ interface ActivityDbRow extends RowDataPacket {
   title: string;
   main_department: string;
   main_department_name: string;
+  main_department_active: number;
   activity_type_id: number | string;
   activity_type_name: string;
+  activity_type_active: number;
   participant_type_name: string;
+  participant_type_active: number;
   start_date: string;
   end_date: string;
   participants: number | string;
@@ -109,7 +104,7 @@ function toNumber(value: number | string): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function mapActivity(row: ActivityDbRow): AdminActivity {
+function mapActivity(row: ActivityDbRow, inactiveSuffix = ""): AdminActivity {
   return {
     kind: row.kind,
     id: String(row.id),
@@ -117,10 +112,16 @@ function mapActivity(row: ActivityDbRow): AdminActivity {
     quarterNo: toNumber(row.quarter_no),
     title: row.title,
     mainDepartment: row.main_department,
-    mainDepartmentName: row.main_department_name,
+    mainDepartmentName: Number(row.main_department_active) === 1
+      ? row.main_department_name
+      : formatInactiveLabel(row.main_department_name, inactiveSuffix),
     activityTypeId: toNumber(row.activity_type_id),
-    activityTypeName: row.activity_type_name,
-    participantTypeName: row.participant_type_name,
+    activityTypeName: Number(row.activity_type_active) === 1
+      ? row.activity_type_name
+      : formatInactiveLabel(row.activity_type_name, inactiveSuffix),
+    participantTypeName: Number(row.participant_type_active) === 1
+      ? row.participant_type_name
+      : formatInactiveLabel(row.participant_type_name, inactiveSuffix),
     startDate: row.start_date,
     endDate: row.end_date,
     participants: toNumber(row.participants),
@@ -141,14 +142,14 @@ function mapActivity(row: ActivityDbRow): AdminActivity {
   };
 }
 
-export async function getAdminActivitiesOptions(): Promise<AdminActivitiesOptions> {
+export async function getAdminActivitiesOptions(
+  inactiveSuffix = "",
+): Promise<AdminActivitiesOptions> {
   const db = getDb();
   const [
     [fiscalYearRows],
     [quarterRows],
-    [departmentRows],
-    [activityTypeRows],
-    [participantTypeRows],
+    options,
   ] = await Promise.all([
     db.execute<FiscalYearRow[]>(
       `SELECT fiscal_year
@@ -167,18 +168,7 @@ export async function getAdminActivitiesOptions(): Promise<AdminActivitiesOption
       "SELECT no, label_th FROM quarters ORDER BY no",
       [],
     ),
-    db.execute<DepartmentRow[]>(
-      "SELECT code, name_th FROM departments WHERE is_active = 1 ORDER BY sort_no, code",
-      [],
-    ),
-    db.execute<ActivityTypeRow[]>(
-      "SELECT id, name_th FROM activity_types WHERE is_active = 1 ORDER BY sort_no, id",
-      [],
-    ),
-    db.execute<ActivityTypeRow[]>(
-      "SELECT id, name_th FROM participant_types WHERE is_active = 1 ORDER BY sort_no, id",
-      [],
-    ),
+    getActivityOptionSets("filter", inactiveSuffix),
   ]);
 
   return {
@@ -187,17 +177,17 @@ export async function getAdminActivitiesOptions(): Promise<AdminActivitiesOption
       no: toNumber(row.no),
       label: row.label_th,
     })),
-    departments: departmentRows.map((row) => ({
-      code: row.code,
-      name: row.name_th,
+    departments: options.departments.map((row) => ({
+      code: row.value,
+      name: row.label,
     })),
-    activityTypes: activityTypeRows.map((row) => ({
-      id: toNumber(row.id),
-      name: row.name_th,
+    activityTypes: options.activityTypes.map((row) => ({
+      id: toNumber(row.value),
+      name: row.label,
     })),
-    participantTypes: participantTypeRows.map((row) => ({
-      id: toNumber(row.id),
-      name: row.name_th,
+    participantTypes: options.participantTypes.map((row) => ({
+      id: toNumber(row.value),
+      name: row.label,
     })),
   };
 }
@@ -216,6 +206,7 @@ async function countActivities(
 
 export async function getAdminActivitiesPage(
   filters: AdminActivitiesFilters,
+  inactiveSuffix = "",
 ): Promise<AdminActivitiesPageData> {
   const total = await countActivities(filters);
   const totalPages = Math.max(
@@ -234,12 +225,13 @@ export async function getAdminActivitiesPage(
     page,
     totalPages,
     pageSize: 20,
-    items: rows.map(mapActivity),
+    items: rows.map((row) => mapActivity(row, inactiveSuffix)),
   };
 }
 
 export async function getAdminActivitiesForExport(
   filters: AdminActivitiesFilters,
+  inactiveSuffix = "",
 ): Promise<{ total: number; items: AdminActivity[] }> {
   const total = await countActivities(filters);
   if (total > ADMIN_ACTIVITIES_EXPORT_LIMIT) {
@@ -251,5 +243,5 @@ export async function getAdminActivitiesForExport(
     queries.exportSql,
     queries.exportValues,
   );
-  return { total, items: rows.map(mapActivity) };
+  return { total, items: rows.map((row) => mapActivity(row, inactiveSuffix)) };
 }

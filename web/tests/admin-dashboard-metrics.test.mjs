@@ -10,6 +10,7 @@ import {
   mergeDepartmentActivityCounts,
   sortFeaturedActivities,
 } from "../src/lib/admin-dashboard-metrics.ts";
+import { buildDashboardPlannedConditions } from "../src/lib/admin-dashboard-query.ts";
 
 test("previous and next fiscal quarters cross fiscal-year boundaries", () => {
   assert.deepEqual(
@@ -20,6 +21,21 @@ test("previous and next fiscal quarters cross fiscal-year boundaries", () => {
     getNextFiscalQuarter({ fiscalYear: 2569, quarterNo: 4 }),
     { fiscalYear: 2570, quarterNo: 1 },
   );
+});
+
+test("dashboard planned summary and table use next quarter across fiscal year", () => {
+  const selected = { fiscalYear: 2569, quarterNo: 4 };
+  const planQuarter = getNextFiscalQuarter(selected);
+  assert.deepEqual(planQuarter, { fiscalYear: 2570, quarterNo: 1 });
+
+  const planned = buildDashboardPlannedConditions(
+    { departmentCode: "STI", activityTypeId: 2 },
+    planQuarter,
+  );
+  assert.deepEqual(planned.values, [2570, 1, 2, "STI", "STI"]);
+  assert.match(planned.conditions.join(" AND "), /pa\.fiscal_year = \?/);
+  assert.match(planned.conditions.join(" AND "), /pa\.quarter_no = \?/);
+  assert.match(planned.conditions.join(" AND "), /planned_co_organizers/);
 });
 
 test("quarter and planned-event labels use Thai fiscal dates", () => {

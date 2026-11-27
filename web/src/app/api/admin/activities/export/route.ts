@@ -12,6 +12,7 @@ import {
   type AdminActivitiesFilterOptions,
 } from "@/lib/admin-activities-query";
 import { excelSafeText } from "@/lib/excel-safe";
+import { getSiteContent } from "@/lib/content";
 
 export const dynamic = "force-dynamic";
 
@@ -41,7 +42,8 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const [options] = await Promise.all([getAdminActivitiesOptions()]);
+    const content = await getSiteContent(["form.option.inactive"]);
+    const options = await getAdminActivitiesOptions(content["form.option.inactive"]);
     const filterOptions: AdminActivitiesFilterOptions = {
       fiscalYears: options.fiscalYears,
       departments: options.departments,
@@ -51,7 +53,10 @@ export async function GET(request: NextRequest) {
       request.nextUrl.searchParams,
       filterOptions,
     );
-    const { total, items } = await getAdminActivitiesForExport(filters);
+    const { total, items } = await getAdminActivitiesForExport(
+      filters,
+      content["form.option.inactive"],
+    );
 
     const workbook = new ExcelJS.Workbook();
     workbook.creator = "ระบบรวบรวมข้อมูลกิจกรรม";

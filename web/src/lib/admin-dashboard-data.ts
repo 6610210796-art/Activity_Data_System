@@ -2,6 +2,11 @@ import "server-only";
 
 import type { RowDataPacket } from "mysql2";
 import { getDb } from "@/lib/db";
+import { formatInactiveLabel } from "@/lib/option-policy";
+import {
+  addDashboardPastFilters,
+  buildDashboardPlannedConditions,
+} from "@/lib/admin-dashboard-query";
 import {
   calculateAverageSatisfaction,
   getNextFiscalQuarter,
@@ -110,6 +115,8 @@ export interface DashboardOptions {
   quarters: { no: number; label_th: string }[];
   activeDepartments: { code: string; name_th: string }[];
   activeActivityTypes: { id: number; name_th: string }[];
+  filterDepartments: { code: string; name_th: string }[];
+  filterActivityTypes: { id: number; name_th: string }[];
   activityTypes: { id: number; name_th: string }[];
   participantTypes: { id: number; name_th: string }[];
 }
@@ -201,43 +208,9 @@ function metricsFromRow(
   };
 }
 
-function addPastFilters(
-  conditions: string[],
-  params: (number | string)[],
-  filters: DashboardFilters,
-  includeDepartment: boolean,
-): void {
-  if (filters.activityTypeId !== null) {
-    conditions.push("pa.activity_type_id = ?");
-    params.push(filters.activityTypeId);
-  }
-  if (includeDepartment && filters.departmentCode !== null) {
-    conditions.push(
-      "(pa.main_department = ? OR EXISTS (SELECT 1 FROM past_co_organizers pco WHERE pco.past_id = pa.id AND pco.department_code = ?))",
-    );
-    params.push(filters.departmentCode, filters.departmentCode);
-  }
-}
-
-function addPlannedFilters(
-  conditions: string[],
-  params: (number | string)[],
-  filters: DashboardFilters,
-): void {
-  if (filters.activityTypeId !== null) {
-    conditions.push("pa.activity_type_id = ?");
-    params.push(filters.activityTypeId);
-  }
-  if (filters.departmentCode !== null) {
-    conditions.push(
-      "(pa.main_department = ? OR EXISTS (SELECT 1 FROM planned_co_organizers pco WHERE pco.planned_id = pa.id AND pco.department_code = ?))",
-    );
-    params.push(filters.departmentCode, filters.departmentCode);
-  }
-}
-
 export async function getAdminDashboardOptions(
   defaultFiscalYear: number,
+  inactiveSuffix = "",
 ): Promise<DashboardOptions> {
   const db = getDb();
   const [
@@ -294,6 +267,18 @@ export async function getAdminDashboardOptions(
     activeActivityTypes: activityTypeRows
       .filter((row) => Number(row.is_active) === 1)
       .map((row) => ({ id: Number(row.id), name_th: row.name_th })),
+    filterDepartments: departmentRows.map((row) => ({
+      code: row.code,
+      name_th: Number(row.is_active) === 1
+        ? row.name_th
+        : formatInactiveLabel(row.name_th, inactiveSuffix),
+    })),
+    filterActivityTypes: activityTypeRows.map((row) => ({
+      id: Number(row.id),
+      name_th: Number(row.is_active) === 1
+        ? row.name_th
+        : formatInactiveLabel(row.name_th, inactiveSuffix),
+    })),
     activityTypes: activityTypeRows.map((row) => ({
       id: Number(row.id),
       name_th: row.name_th,
@@ -323,14 +308,14 @@ export async function getAdminDashboardData(
     previousQuarter.fiscalYear,
     previousQuarter.quarterNo,
   ];
-  addPastFilters(statsConditions, statsParams, filters, true);
+  addDashboardPastFilters(statsConditions, statsParams, filters, true);
 
   const trendConditions = [
     "pa.deleted_at IS NULL",
     "pa.fiscal_year = ?",
   ];
   const trendParams: (number | string)[] = [filters.fiscalYear];
-  addPastFilters(trendConditions, trendParams, filters, true);
+  addDashboardPastFilters(trendConditions, trendParams, filters, true);
 
   const scopedPastConditions = [
     "pa.deleted_at IS NULL",
@@ -341,11 +326,18 @@ export async function getAdminDashboardData(
     filters.fiscalYear,
     filters.quarterNo,
   ];
-  addPastFilters(scopedPastConditions, scopedPastParams, filters, true);
+  addDashboardPastFilters(scopedPastConditions, scopedPastParams, filters, true);
 
-  const departmentChartConditions = [...scopedPastConditions];
-  const departmentChartParams = [...scopedPastParams];
-  addPastFilters(
+  const departmentChartConditions = [
+    "pa.deleted_at IS NULL",
+    "pa.fiscal_year = ?",
+    "pa.quarter_no = ?",
+  ];
+  const departmentChartParams: (number | string)[] = [
+    filters.fiscalYear,
+    filters.quarterNo,
+  ];
+  addDashboardPastFilters(
     departmentChartConditions,
     departmentChartParams,
     filters,
@@ -359,16 +351,8 @@ export async function getAdminDashboardData(
   ];
   const submissionParams = [filters.fiscalYear, filters.quarterNo];
 
-  const plannedConditions = [
-    "pa.deleted_at IS NULL",
-    "pa.fiscal_year = ?",
-    "pa.quarter_no = ?",
-  ];
-  const plannedParams: (number | string)[] = [
-    planQuarter.fiscalYear,
-    planQuarter.quarterNo,
-  ];
-  addPlannedFilters(plannedConditions, plannedParams, filters);
+  const { conditions: plannedConditions, values: plannedParams } =
+    buildDashboardPlannedConditions(filters, planQuarter);
 
   const [
     [statsRows],
@@ -503,7 +487,7 @@ export async function getAdminDashboardData(
     "SELECT code, name_th, sort_no, is_active FROM departments ORDER BY sort_no, code",
     [],
   );
-  const departmentCounts = mergeDepartmentActivityCounts(
+  const allDepartmentCounts = mergeDepartmentActivityCounts(
     allDepartmentRows[0].map((department) => ({
       code: department.code,
       name_th: department.name_th,
@@ -516,10 +500,16 @@ export async function getAdminDashboardData(
     name: department.name_th,
     activityCount: department.activity_count,
   }));
+  const departmentCounts = filters.departmentCode === null
+    ? allDepartmentCounts
+    : allDepartmentCounts.filter((department) => department.code === filters.departmentCode);
   const departmentChartActivityCount = mainDepartmentRows.reduce(
     (total, department) => total + toNumber(department.activity_count),
     0,
   );
+  const filteredDepartmentChartActivityCount = filters.departmentCode === null
+    ? departmentChartActivityCount
+    : departmentCounts.reduce((total, department) => total + department.activityCount, 0);
   const departmentAffiliations = departmentCounts.reduce(
     (total, department) => total + department.activityCount,
     0,
@@ -618,12 +608,14 @@ export async function getAdminDashboardData(
     current,
     previous,
     departmentCounts,
-    departmentChartActivityCount,
+    departmentChartActivityCount: filteredDepartmentChartActivityCount,
     departmentAffiliations,
-    activityTypeCounts: options.activityTypes.map((type) => ({
+    activityTypeCounts: options.activityTypes
+      .filter((type) => filters.activityTypeId === null || type.id === filters.activityTypeId)
+      .map((type) => ({
       id: type.id,
       activityCount: activityTypeCounts.get(type.id) ?? 0,
-    })),
+      })),
     participantTypeCounts: options.participantTypes.map((type) => ({
       id: type.id,
       activityCount: participantTypeCounts.get(type.id) ?? 0,

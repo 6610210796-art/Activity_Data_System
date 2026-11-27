@@ -13,7 +13,7 @@ interface BannerRow extends RowDataPacket {
 }
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ plannedId: string }> },
 ) {
   const user = await getCurrentUser();
@@ -24,12 +24,14 @@ export async function GET(
     return new NextResponse(null, { status: 404 });
   }
 
+  const archiveScope = new URL(request.url).searchParams.get("scope") === "archive";
   const [rows] = await getDb().execute<BannerRow[]>(
     `SELECT banner_path, main_department
      FROM planned_activities
-     WHERE id = ? AND deleted_at IS NULL
+     WHERE id = ? AND ((? = 1 AND deleted_at IS NOT NULL AND purged_at IS NULL)
+       OR (? = 0 AND deleted_at IS NULL AND purged_at IS NULL))
      LIMIT 1`,
-    [plannedId],
+    [plannedId, archiveScope ? 1 : 0, archiveScope ? 1 : 0],
   );
   const banner = rows[0];
   if (

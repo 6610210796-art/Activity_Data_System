@@ -8,7 +8,6 @@ import {
   hashPassword,
   normalizeEmail,
   validateEmail,
-  validatePasswordPolicy,
 } from "@/lib/password-security";
 import {
   checkUserLockProtection,
@@ -16,6 +15,10 @@ import {
   type ManagedProfile,
   type ManagedRole,
 } from "@/lib/user-management";
+import { authorizeAdminUsers } from "@/lib/admin-users-policy";
+import { writeUserAudit } from "@/lib/user-audit";
+import { lockActiveAdmins, lockAndVerifyAdminActor } from "@/lib/admin-user-lock";
+import { logSafeServerError } from "@/lib/safe-error-log";
 
 export const dynamic = "force-dynamic";
 
@@ -45,10 +48,11 @@ async function getTarget(connection: PoolConnection, id: string) {
 
 export async function PATCH(request: NextRequest, context: Context) {
   const actor = await getCurrentUser();
-  if (!actor) return NextResponse.json({ error: "session" }, { status: 401 });
-  if (actor.role !== "admin") {
-    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  const access = authorizeAdminUsers(actor);
+  if (!access.allowed) {
+    return NextResponse.json({ error: access.error }, { status: access.status });
   }
+  const admin = access.actor;
 
   const { id } = await context.params;
   let body: unknown;
@@ -66,17 +70,17 @@ export async function PATCH(request: NextRequest, context: Context) {
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
+    const activeAdminCount = await lockActiveAdmins(connection);
+    const actorError = await lockAndVerifyAdminActor(connection, admin.id);
+    if (actorError) {
+      await connection.rollback();
+      return NextResponse.json({ error: actorError }, { status: actorError === "session" ? 401 : 403 });
+    }
     const target = await getTarget(connection, id);
     if (!target) {
       await connection.rollback();
       return NextResponse.json({ error: "not_found" }, { status: 404 });
     }
-
-    const [activeAdminRows] = await connection.execute<RowDataPacket[]>(
-      "SELECT COUNT(*) AS total FROM profiles WHERE role = 'admin' AND is_active = 1 FOR UPDATE",
-      [],
-    );
-    const activeAdminCount = Number(activeAdminRows[0]?.total ?? 0);
 
     if (action === "profile") {
       if (!("fullName" in body) || !("email" in body)) {
@@ -99,7 +103,7 @@ export async function PATCH(request: NextRequest, context: Context) {
       );
       if (profileError) {
         await connection.rollback();
-        return NextResponse.json({ error: "validation", message: profileError }, { status: 400 });
+        return NextResponse.json({ error: "validation" }, { status: 400 });
       }
 
       const [duplicateRows] = await connection.execute<RowDataPacket[]>(
@@ -108,26 +112,21 @@ export async function PATCH(request: NextRequest, context: Context) {
       );
       if (duplicateRows.length > 0) {
         await connection.rollback();
-        return NextResponse.json({ error: "email_duplicate", message: "อีเมลนี้มีในระบบแล้ว" }, { status: 409 });
+        return NextResponse.json({ error: "email_duplicate" }, { status: 409 });
       }
 
       await connection.execute(
         "UPDATE profiles SET full_name = ?, email = ? WHERE id = ?",
         [fullName, email, id],
       );
-      await connection.execute(
-        `INSERT INTO audit_logs (user_id, action, entity, entity_id, detail, ip_address)
-         VALUES (?, 'user.update_profile', 'user', ?, ?, ?)`,
-        [
-          actor.id,
-          id,
-          JSON.stringify({
-            full_name: { before: target.full_name, after: fullName },
-            email: { before: target.email, after: email },
-          }),
-          ipAddress(request),
-        ],
-      );
+      await writeUserAudit(connection, {
+        actorId: admin.id,
+        action: "user.update_profile",
+        entityId: id,
+        before: { full_name: target.full_name, email: target.email },
+        after: { full_name: fullName, email },
+        ipAddress: ipAddress(request),
+      });
       await connection.commit();
       return NextResponse.json({ ok: true, fullName, email });
     }
@@ -149,7 +148,7 @@ export async function PATCH(request: NextRequest, context: Context) {
           : target.department_code;
 
       const protection = checkUserLockProtection({
-        actorId: actor.id,
+        actorId: admin.id,
         targetId: id,
         targetBefore: target,
         targetAfterRole: nextRole,
@@ -160,7 +159,7 @@ export async function PATCH(request: NextRequest, context: Context) {
       });
       if (!protection.ok) {
         await connection.rollback();
-        return NextResponse.json({ error: "lock_protection", message: protection.message }, { status: 409 });
+        return NextResponse.json({ error: "lock_protection" }, { status: 409 });
       }
 
       if (nextRole === "unit_user" && nextDepartment) {
@@ -180,21 +179,24 @@ export async function PATCH(request: NextRequest, context: Context) {
         "UPDATE profiles SET role = ?, department_code = ? WHERE id = ?",
         [nextRole, finalDepartment, id],
       );
-      await connection.execute(
-        `INSERT INTO audit_logs (user_id, action, entity, entity_id, detail, ip_address)
-         VALUES (?, 'user.update_role', 'user', ?, ?, ?)`,
-        [
-          actor.id,
-          id,
-          JSON.stringify({
-            before: target.role,
-            after: nextRole,
-            department_before: target.department_code,
-            department_after: finalDepartment,
-          }),
-          ipAddress(request),
-        ],
-      );
+      await writeUserAudit(connection, {
+        actorId: admin.id,
+        action: "user.update_role",
+        entityId: id,
+        before: { role: target.role },
+        after: { role: nextRole },
+        ipAddress: ipAddress(request),
+      });
+      if (target.department_code !== finalDepartment) {
+        await writeUserAudit(connection, {
+          actorId: admin.id,
+          action: "user.update_department",
+          entityId: id,
+          before: { department_code: target.department_code },
+          after: { department_code: finalDepartment },
+          ipAddress: ipAddress(request),
+        });
+      }
       await connection.commit();
       return NextResponse.json({
         ok: true,
@@ -228,19 +230,14 @@ export async function PATCH(request: NextRequest, context: Context) {
         "UPDATE profiles SET department_code = ? WHERE id = ?",
         [departmentCode || null, id],
       );
-      await connection.execute(
-        `INSERT INTO audit_logs (user_id, action, entity, entity_id, detail, ip_address)
-         VALUES (?, 'user.update_department', 'user', ?, ?, ?)`,
-        [
-          actor.id,
-          id,
-          JSON.stringify({
-            before: target.department_code,
-            after: departmentCode || null,
-          }),
-          ipAddress(request),
-        ],
-      );
+      await writeUserAudit(connection, {
+        actorId: admin.id,
+        action: "user.update_department",
+        entityId: id,
+        before: { department_code: target.department_code },
+        after: { department_code: departmentCode || null },
+        ipAddress: ipAddress(request),
+      });
       await connection.commit();
       return NextResponse.json({ ok: true, departmentCode: departmentCode || null });
     }
@@ -252,7 +249,7 @@ export async function PATCH(request: NextRequest, context: Context) {
       }
       const nextActive = body.isActive;
       const protection = checkUserLockProtection({
-        actorId: actor.id,
+        actorId: admin.id,
         targetId: id,
         targetBefore: target,
         targetAfterRole: target.role,
@@ -262,36 +259,29 @@ export async function PATCH(request: NextRequest, context: Context) {
       });
       if (!protection.ok) {
         await connection.rollback();
-        return NextResponse.json({ error: "lock_protection", message: protection.message }, { status: 409 });
+        return NextResponse.json({ error: "lock_protection" }, { status: 409 });
       }
       await connection.execute(
         "UPDATE profiles SET is_active = ? WHERE id = ?",
         [nextActive ? 1 : 0, id],
       );
-      await connection.execute(
-        `INSERT INTO audit_logs (user_id, action, entity, entity_id, detail, ip_address)
-         VALUES (?, ?, 'user', ?, ?, ?)`,
-        [
-          actor.id,
-          nextActive ? "user.enable" : "user.disable",
-          id,
-          JSON.stringify({
-            before: Number(target.is_active) === 1,
-            after: nextActive,
-          }),
-          ipAddress(request),
-        ],
-      );
+      await writeUserAudit(connection, {
+        actorId: admin.id,
+        action: nextActive ? "user.enable" : "user.disable",
+        entityId: id,
+        before: { is_active: Number(target.is_active) === 1 },
+        after: { is_active: nextActive },
+        ipAddress: ipAddress(request),
+      });
       await connection.commit();
       return NextResponse.json({ ok: true, isActive: nextActive });
     }
 
     if (action === "reset_password") {
-      if (actor.id === id) {
+      if (admin.id === id) {
         await connection.rollback();
         return NextResponse.json({
           error: "lock_protection",
-          message: "ไม่สามารถรีเซ็ตรหัสผ่านของตัวเองได้ โปรดใช้หน้าเปลี่ยนรหัสผ่าน",
         }, { status: 409 });
       }
       const password = generateTemporaryPassword();
@@ -300,16 +290,14 @@ export async function PATCH(request: NextRequest, context: Context) {
         "UPDATE profiles SET password_hash = ? WHERE id = ?",
         [passwordHash, id],
       );
-      await connection.execute(
-        `INSERT INTO audit_logs (user_id, action, entity, entity_id, detail, ip_address)
-         VALUES (?, 'user.reset_password', 'user', ?, ?, ?)`,
-        [
-          actor.id,
-          id,
-          JSON.stringify({ password_reset: "completed" }),
-          ipAddress(request),
-        ],
-      );
+      await writeUserAudit(connection, {
+        actorId: admin.id,
+        action: "user.reset_password",
+        entityId: id,
+        before: { credential_state: "existing" },
+        after: { credential_state: "reset" },
+        ipAddress: ipAddress(request),
+      });
       await connection.commit();
       return NextResponse.json({
         ok: true,
@@ -321,7 +309,10 @@ export async function PATCH(request: NextRequest, context: Context) {
     return NextResponse.json({ error: "invalid" }, { status: 400 });
   } catch (error) {
     await connection.rollback();
-    console.error("Update managed user failed", error);
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ER_DUP_ENTRY") {
+      return NextResponse.json({ error: "email_duplicate" }, { status: 409 });
+    }
+    logSafeServerError("Update managed user failed", error);
     return NextResponse.json({ error: "server" }, { status: 500 });
   } finally {
     connection.release();

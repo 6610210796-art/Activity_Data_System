@@ -4,18 +4,24 @@ import Image from "next/image";
 import Link from "next/link";
 import {
   AlertTriangle,
+  Archive,
+  ArrowLeft,
   ChevronLeft,
   ChevronRight,
-  FilterX,
+  History,
   Pencil,
+  RotateCcw,
+  ShieldAlert,
   Search,
-  Trash2,
 } from "lucide-react";
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { buildFilterQuery, isLatestRequest, resetFilterPage } from "@/lib/filter-navigation";
+import { ClearFiltersButton } from "@/components/clear-filters-button";
 import type { AuthenticatedUser } from "@/lib/auth";
 import type { SiteContent } from "@/lib/content";
 import type { DepartmentOption } from "@/lib/past-activity-data";
 import type { QuarterOption } from "@/lib/past-activity-data";
+import { ActivityFormHeader } from "@/components/activity-form-header";
 
 interface ActivityTypeOption {
   id: number;
@@ -38,6 +44,7 @@ interface MineActivity {
   image_id: string | null;
   planned_id: string | null;
   result_recorded: boolean;
+  archived_at?: string;
 }
 
 interface MineResponse {
@@ -57,6 +64,7 @@ interface MineActivitiesProps {
   quarters: QuarterOption[];
   role: AuthenticatedUser["role"];
   initialFilters: MineFilters;
+  mode?: "mine" | "archive";
 }
 
 type ActivityKind = "past" | "planned";
@@ -117,33 +125,39 @@ export function MineActivities({
   quarters,
   role,
   initialFilters,
+  mode = "mine",
 }: MineActivitiesProps) {
   const [filters, setFilters] = useState<MineFilters>(initialFilters);
   const [data, setData] = useState(EMPTY_RESPONSE);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [submittingAction, setSubmittingAction] = useState(false);
+  const requestId = useRef(0);
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelActionRef = useRef<HTMLButtonElement>(null);
+  const [pendingAction, setPendingAction] = useState<{ item: MineActivity; action: "archive" | "restore" | "purge" } | null>(null);
+  const apiPath = mode === "archive" ? "/api/activities/archive" : "/api/activities/mine";
+  const pagePath = mode === "archive" ? "/activities/archive" : "/activities/mine";
 
   const load = useCallback(async (nextFilters: typeof filters) => {
+    const id = ++requestId.current;
     setLoading(true);
     setError("");
     try {
-      const query = new URLSearchParams();
-      for (const [key, value] of Object.entries(nextFilters)) {
-        if (value) query.set(key, value);
-      }
-      const response = await fetch(`/api/activities/mine?${query.toString()}`, {
+      const query = buildFilterQuery(nextFilters);
+      const response = await fetch(apiPath + "?" + query, {
         cache: "no-store",
       });
       if (!response.ok) throw new Error("Unable to load activities");
       const result = (await response.json()) as MineResponse;
-      setData(result);
+      if (isLatestRequest(id, requestId.current)) setData(result);
     } catch {
-      setError(content["mine.error"]);
+      if (isLatestRequest(id, requestId.current)) setError(content["mine.error"]);
     } finally {
-      setLoading(false);
+      if (isLatestRequest(id, requestId.current)) setLoading(false);
     }
-  }, [content]);
+  }, [apiPath, content]);
 
   useEffect(() => {
     void Promise.resolve().then(() => load(initialFilters));
@@ -153,23 +167,34 @@ export function MineActivities({
       void load(current);
     };
     window.addEventListener("popstate", handlePopState);
-    return () => window.removeEventListener("popstate", handlePopState);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+      if (searchTimer.current) clearTimeout(searchTimer.current);
+      requestId.current += 1;
+    };
   }, [initialFilters, load]);
 
-  function updateUrl(nextFilters: typeof filters) {
-    const params = new URLSearchParams();
-    for (const [key, value] of Object.entries(nextFilters)) {
-      if (value) params.set(key, value);
-    }
-    const query = params.toString();
-    window.history.pushState(null, "", query ? `/activities/mine?${query}` : "/activities/mine");
-    setFilters(nextFilters);
-    void load(nextFilters);
+  function updateUrl(
+    nextFilters: typeof filters,
+    history: "push" | "replace" = "push",
+    resetPage = true,
+  ) {
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    const normalized = resetPage ? resetFilterPage(nextFilters) : nextFilters;
+    const query = buildFilterQuery(normalized);
+    window.history[history === "push" ? "pushState" : "replaceState"](
+      null,
+      "",
+      query ? pagePath + "?" + query : pagePath,
+    );
+    setFilters(normalized);
+    void load(normalized);
   }
 
   function submitFilters(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    updateUrl({ ...filters, page: "1" });
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    updateUrl(filters, "replace");
   }
 
   function changeKind(type: ActivityKind) {
@@ -181,29 +206,58 @@ export function MineActivities({
     updateUrl(cleared);
   }
 
-  async function deleteItem(item: MineActivity) {
-    const confirmation = template(content["mine.delete.confirm"], { title: item.title });
-    if (!window.confirm(confirmation)) return;
+  async function applyArchiveAction() {
+    if (!pendingAction || submittingAction) return;
+    const { item, action } = pendingAction;
+    setSubmittingAction(true);
     setError("");
     setNotice("");
     try {
-      const response = await fetch(`/api/activities/${filters.type}/${item.id}`, {
-        method: "DELETE",
+      const response = await fetch("/api/activities/archive/" + filters.type + "/" + item.id, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
       });
-      if (!response.ok) throw new Error("Unable to delete activity");
-      setNotice(content["mine.delete.success"]);
+      if (!response.ok) throw new Error("Unable to update archived activity");
+      setNotice(content[("archive.success." + action) as keyof SiteContent]);
+      setPendingAction(null);
       await load(filters);
     } catch {
-      setError(content["err.mine.delete"]);
+      setError(content["err.archive.action"]);
+    } finally {
+      setSubmittingAction(false);
     }
   }
+
+  useEffect(() => {
+    if (pendingAction) cancelActionRef.current?.focus();
+  }, [pendingAction]);
 
   const page = data.page || 1;
   const pages = data.totalPages || 1;
   const createHref = filters.type === "past" ? "/activities/past/new" : "/activities/planned/new";
 
   return (
-    <section className="mine-card" aria-label={content["mine.title"]}>
+    <>
+    <ActivityFormHeader
+      content={content}
+      titleKey={mode === "archive" ? "archive.title" : "mine.title"}
+      descriptionKey={mode === "archive" ? "archive.description" : "mine.description"}
+      rightAction={mode === "archive" ? (
+        <Link className="activity-form-back-button" href="/activities/mine">
+          <ArrowLeft aria-hidden="true" size={16} />{content["archive.back"]}
+        </Link>
+      ) : (
+        <div className="mine-heading-actions">
+          <Link aria-label={content["archive.action.open"]} className="mine-archive-button" href="/activities/archive" title={content["archive.action.open"]}>
+            <History aria-hidden="true" size={18} />
+          </Link>
+          <Link className="mine-create-button mine-create-past" href="/activities/past/new">{content["mine.create_past"]}</Link>
+          <Link className="mine-create-button mine-create-planned" href="/activities/planned/new">{content["mine.create_planned"]}</Link>
+        </div>
+      )}
+    />
+    <section className="mine-card" aria-label={content[mode === "archive" ? "archive.title" : "mine.title"]}>
       <div className="mine-tabs" role="tablist" aria-label={content["mine.title"]}>
         <button
           aria-selected={filters.type === "past"}
@@ -231,7 +285,13 @@ export function MineActivities({
           <span className="mine-search-input">
             <Search aria-hidden="true" size={17} />
             <input
-              onChange={(event) => setFilters({ ...filters, search: event.target.value })}
+              aria-label={content["mine.search.label"]}
+              onChange={(event) => {
+                const next = { ...filters, search: event.target.value, page: "1" };
+                setFilters(next);
+                if (searchTimer.current) clearTimeout(searchTimer.current);
+                searchTimer.current = setTimeout(() => updateUrl(next, "replace"), 350);
+              }}
               placeholder={content["mine.search.placeholder"]}
               value={filters.search}
             />
@@ -239,8 +299,8 @@ export function MineActivities({
         </label>
         <label>
           <span>{content["form1.field.fiscal_year"]}</span>
-          <select
-            onChange={(event) => setFilters({ ...filters, fiscalYear: event.target.value })}
+          <select aria-label={content["form1.field.fiscal_year"]}
+            onChange={(event) => updateUrl({ ...filters, fiscalYear: event.target.value })}
             value={filters.fiscalYear}
           >
             <option value="">{content["mine.filter.year"]}</option>
@@ -249,8 +309,8 @@ export function MineActivities({
         </label>
         <label>
           <span>{content["form1.field.quarter"]}</span>
-          <select
-            onChange={(event) => setFilters({ ...filters, quarterNo: event.target.value })}
+          <select aria-label={content["form1.field.quarter"]}
+            onChange={(event) => updateUrl({ ...filters, quarterNo: event.target.value })}
             value={filters.quarterNo}
           >
             <option value="">{content["mine.filter.quarter"]}</option>
@@ -261,8 +321,8 @@ export function MineActivities({
         </label>
         <label>
           <span>{content["form1.field.activity_type"]}</span>
-          <select
-            onChange={(event) => setFilters({ ...filters, activityTypeId: event.target.value })}
+          <select aria-label={content["form1.field.activity_type"]}
+            onChange={(event) => updateUrl({ ...filters, activityTypeId: event.target.value })}
             value={filters.activityTypeId}
           >
             <option value="">{content["mine.filter.activity_type"]}</option>
@@ -274,8 +334,8 @@ export function MineActivities({
         {role === "admin" ? (
           <label>
             <span>{content["form1.field.main_department"]}</span>
-            <select
-              onChange={(event) => setFilters({ ...filters, departmentCode: event.target.value })}
+            <select aria-label={content["form1.field.main_department"]}
+              onChange={(event) => updateUrl({ ...filters, departmentCode: event.target.value })}
               value={filters.departmentCode}
             >
               <option value="">{content["mine.filter.department"]}</option>
@@ -288,24 +348,27 @@ export function MineActivities({
           </label>
         ) : null}
         <div className="mine-filter-actions">
-          <button className="mine-filter-apply" type="submit">{content["mine.filter.apply"]}</button>
-          <button className="mine-filter-clear" onClick={clearFilters} type="button">
-            <FilterX aria-hidden="true" size={16} />
-            {content["mine.filter.clear"]}
-          </button>
+          <ClearFiltersButton label={content["mine.filter.clear"]} onClick={clearFilters} />
         </div>
       </form>
 
       {notice ? <p className="mine-notice" role="status">{notice}</p> : null}
       {error ? <p className="mine-error" role="alert">{error}</p> : null}
-      {loading ? (
+      <div className="mine-results" aria-busy={loading}>
+      {loading && data.total > 0 ? <div className="filter-loading-bar" aria-hidden="true" /> : null}
+      <p className="sr-only" aria-live="polite">{template(content["mine.pagination.summary"], { page, pages, count: data.total })}</p>
+      {loading && data.total === 0 ? (
         <div className="mine-loading" role="status">{content["mine.loading"]}</div>
       ) : error ? null : data.items.length === 0 ? (
         <div className="mine-empty-state">
-          <p>{content["mine.empty"]}</p>
-          <Link className="mine-create-button mine-create-past" href={createHref}>
-            {content["mine.empty.create"]}
-          </Link>
+          <p>{filters.fiscalYear || filters.quarterNo || filters.activityTypeId || filters.departmentCode || filters.search
+            ? content["mine.filter.no_results"]
+            : content["mine.empty"]}</p>
+          {mode === "archive" ? (
+            <Link className="mine-create-button mine-create-past" href="/activities/mine">{content["archive.back"]}</Link>
+          ) : (
+            <Link className="mine-create-button mine-create-past" href={createHref}>{content["mine.empty.create"]}</Link>
+          )}
         </div>
       ) : (
         <>
@@ -319,6 +382,7 @@ export function MineActivities({
                   <th>{content["mine.column.date"]}</th>
                   <th>{content["mine.column.participants"]}</th>
                   <th>{content["mine.column.status"]}</th>
+                  {mode === "archive" ? <th>{content["archive.column.date"]}</th> : null}
                   <th>{content["mine.column.actions"]}</th>
                 </tr>
               </thead>
@@ -336,7 +400,7 @@ export function MineActivities({
                               alt=""
                               className="mine-thumbnail"
                               height={54}
-                              src={`/api/activities/past/images/${item.image_id}`}
+                              src={`/api/activities/past/images/${item.image_id}${mode === "archive" ? "?scope=archive" : ""}`}
                               unoptimized
                               width={72}
                             />
@@ -372,13 +436,14 @@ export function MineActivities({
                             ? content["mine.status.confirmed"]
                             : content["mine.status.unconfirmed"]}
                       </td>
+                      {mode === "archive" ? <td data-label={content["archive.column.date"]}>{item.archived_at ? formatDate(item.archived_at.slice(0, 10)) : "—"}</td> : null}
                       <td data-label={content["mine.column.actions"]}>
                         <div className="mine-row-actions">
-                          <Link aria-label={`${content["mine.action.edit"]}: ${item.title}`} className="mine-icon-action" href={editHref}>
+                          {mode === "mine" ? <Link aria-label={`${content["mine.action.edit"]}: ${item.title}`} className="mine-icon-action" href={editHref}>
                             <Pencil aria-hidden="true" size={16} />
                             <span>{content["mine.action.edit"]}</span>
-                          </Link>
-                          {filters.type === "planned" && !item.result_recorded ? (
+                          </Link> : null}
+                          {mode === "mine" && filters.type === "planned" && !item.result_recorded ? (
                             <Link
                               className="mine-record-result"
                               href={`/activities/past/new?plannedId=${encodeURIComponent(item.id)}`}
@@ -386,15 +451,20 @@ export function MineActivities({
                               {content["mine.action.record_result"]}
                             </Link>
                           ) : null}
-                          <button
-                            aria-label={`${content["mine.action.delete"]}: ${item.title}`}
-                            className="mine-icon-action mine-delete-action"
-                            onClick={() => void deleteItem(item)}
-                            type="button"
-                          >
-                            <Trash2 aria-hidden="true" size={16} />
-                            <span>{content["mine.action.delete"]}</span>
-                          </button>
+                          {mode === "mine" ? (
+                            <button aria-label={content["archive.action.store"] + ": " + item.title} className="mine-icon-action mine-archive-action whitespace-nowrap" onClick={() => setPendingAction({ item, action: "archive" })} type="button">
+                              <Archive aria-hidden="true" size={16} /><span>{content["archive.action.store"]}</span>
+                            </button>
+                          ) : (
+                            <>
+                              <button className="mine-icon-action mine-restore-action" onClick={() => setPendingAction({ item, action: "restore" })} type="button">
+                                <RotateCcw aria-hidden="true" size={16} /><span>{content["archive.action.restore"]}</span>
+                              </button>
+                              <button className="mine-icon-action mine-purge-action" onClick={() => setPendingAction({ item, action: "purge" })} type="button">
+                                <ShieldAlert aria-hidden="true" size={16} /><span>{content["archive.action.purge"]}</span>
+                              </button>
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -408,7 +478,7 @@ export function MineActivities({
             <div>
               <button
                 disabled={page <= 1}
-                onClick={() => updateUrl({ ...filters, page: String(page - 1) })}
+                onClick={() => updateUrl({ ...filters, page: String(page - 1) }, "push", false)}
                 type="button"
               >
                 <ChevronLeft aria-hidden="true" size={17} />
@@ -416,7 +486,7 @@ export function MineActivities({
               </button>
               <button
                 disabled={page >= pages}
-                onClick={() => updateUrl({ ...filters, page: String(page + 1) })}
+                onClick={() => updateUrl({ ...filters, page: String(page + 1) }, "push", false)}
                 type="button"
               >
                 {content["mine.pagination.next"]}
@@ -426,6 +496,24 @@ export function MineActivities({
           </div>
         </>
       )}
+      </div>
     </section>
+    {pendingAction ? (
+      <div className="archive-modal-backdrop" onMouseDown={(event) => { if (!submittingAction && event.target === event.currentTarget) setPendingAction(null); }}>
+        <section aria-labelledby="archive-dialog-title" aria-modal="true" className="archive-modal" role="alertdialog">
+          <h2 id="archive-dialog-title">{content["archive.confirm.title"]}</h2>
+          <p>{template(content[("archive.confirm." + pendingAction.action) as keyof SiteContent], { title: pendingAction.item.title })}</p>
+          {pendingAction.action === "purge" ? <p className="archive-purge-warning">{content["archive.confirm.purge.warning"]}</p> : null}
+          {error ? <p className="mine-error" role="alert">{error}</p> : null}
+          <div className="archive-modal-actions">
+            <button ref={cancelActionRef} className="archive-cancel-button" disabled={submittingAction} onClick={() => setPendingAction(null)} type="button">{content["archive.confirm.cancel"]}</button>
+            <button className={pendingAction.action === "purge" ? "archive-submit-button archive-submit-danger" : "archive-submit-button"} disabled={submittingAction || loading} onClick={() => void applyArchiveAction()} type="button">
+              {submittingAction ? content["archive.confirm.submitting"] : content["archive.confirm.submit"]}
+            </button>
+          </div>
+        </section>
+      </div>
+    ) : null}
+    </>
   );
 }

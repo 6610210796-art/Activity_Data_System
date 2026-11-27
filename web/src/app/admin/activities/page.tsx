@@ -67,6 +67,7 @@ const CONTENT_KEYS = [
   "all.status.confirmed.label",
   "all.status.unconfirmed.label",
   "all.quarter.fiscal",
+  "form.option.inactive",
 ] as const satisfies readonly ContentKey[];
 
 interface PageProps {
@@ -79,18 +80,18 @@ export default async function AdminActivitiesPage({
   const user = await requireUser();
   if (user.role !== "admin") redirect("/");
 
-  const [query, options, content] = await Promise.all([
+  const [query, content] = await Promise.all([
     searchParams,
-    getAdminActivitiesOptions(),
     getSiteContent(CONTENT_KEYS),
   ]);
+  const options = await getAdminActivitiesOptions(content["form.option.inactive"]);
   const filterOptions: AdminActivitiesFilterOptions = {
     fiscalYears: options.fiscalYears,
     departments: options.departments,
     activityTypes: options.activityTypes,
   };
   const filters = parseAdminActivitiesFilters(query, filterOptions);
-  const data = await getAdminActivitiesPage(filters);
+  const data = await getAdminActivitiesPage(filters, content["form.option.inactive"]);
 
   return (
     <AppShell activeTab="activities" content={content} user={user}>
